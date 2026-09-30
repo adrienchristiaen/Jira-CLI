@@ -42,7 +42,7 @@ def plan_release(
     repo: RepoConfig = repo_config_for(mr.project_path)
     ref = mr.source_branch if repo.pipeline_ref == "source" else mr.target_branch
 
-    modules = _pick_modules(mr, host, ref, prompter)
+    modules = _pick_modules(mr, repo, host, ref, prompter)
     variables = host.pipeline_variables(mr.project_path, ref)
     releases = [
         _prepare_module(issue, mr, ref, module, repo, variables, host, prompter, bump)
@@ -91,9 +91,12 @@ def _pick_merge_request(ticket_key: str, host: CodeHost, prompter: Prompter) -> 
 
 
 def _pick_modules(
-    mr: MergeRequest, host: CodeHost, ref: str, prompter: Prompter
+    mr: MergeRequest, repo: RepoConfig, host: CodeHost, ref: str, prompter: Prompter
 ) -> list[str | None]:
-    modules = detect_modules(lambda name: host.read_file(mr.project_id, name, ref))
+    modules = repo.modules or detect_modules(
+        lambda name: host.read_file(mr.project_id, name, ref),
+        lambda path: host.list_dirs(mr.project_id, path, ref),
+    )
     if not modules:
         prompter.info("Pas de modules détectés : un seul tag pour le repo.")
         return [None]

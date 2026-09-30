@@ -24,7 +24,7 @@ jira-cli release PROJ-123             # lance après confirmation
 
 1. Lit le ticket et vérifie sa colonne (`jira.rc_from_statuses`, optionnel).
 2. Trouve la MR ouverte qui cite le ticket (titre, branche ou description).
-3. Détecte les modules (`build.sbt`, `pom.xml`) et ceux touchés par le diff ; tu valides la liste.
+3. Détecte les modules du repo (voir « Stacks ») et ceux touchés par le diff ; tu valides la liste.
 4. Propose le tag RC par module : continue une RC en cours (`rc.N+1`) ou incrémente la dernière
    version finale (`--bump patch|minor|major`).
 5. Lit les variables de la pipeline du repo (avec leurs menus déroulants) et les pré-remplit.
@@ -50,11 +50,38 @@ repos:
     rc_format: "{version}-rc.{n}"
     pipeline_ref: source    # source = branche de la MR | target = branche cible
     variables: {}
+    modules: {}             # {module: chemin} imposé, remplace la détection
   team/app:                 # réglages propres à un repo
     variables:
       MODULE: "{module}"
       VERSION: "{version}"  # gabarits : {module} {version} {tag} {ticket} {branch} {mr}
 ```
+
+## Stacks
+
+Les modules sont lus dans le fichier de build à la racine du repo (le premier reconnu gagne) :
+
+| Stack | Fichier | Ce qui est lu |
+|---|---|---|
+| sbt | `build.sbt` | `lazy val x = project in file("...")` |
+| Maven | `pom.xml` | `<module>` |
+| Gradle | `settings.gradle(.kts)` | `include(...)` |
+| pnpm | `pnpm-workspace.yaml` | `packages` |
+| npm / yarn | `package.json` | `workspaces` |
+| Cargo | `Cargo.toml` | `[workspace] members` |
+| Go | `go.work` | `use` |
+| uv (Python) | `pyproject.toml` | `[tool.uv.workspace] members` |
+
+Les motifs `dir/*` sont développés en listant les dossiers du repo. Les motifs récursifs (`**`)
+ne sont pas devinés. Pour un autre stack, ou pour imposer un découpage, déclare les modules à la main :
+
+```yaml
+repos:
+  team/app:
+    modules: {billing: services/billing, orders: services/orders}
+```
+
+Sans module détecté, un seul tag est posé pour le repo.
 
 ## Architecture
 

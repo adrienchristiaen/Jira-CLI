@@ -53,6 +53,8 @@ class RepoConfig:
     # Valeurs pré-remplies des variables de la pipeline de tag. Gabarits disponibles :
     # {module} {version} {tag} {ticket} {branch} {mr}
     variables: dict[str, str] = field(default_factory=dict)
+    # {module: chemin} imposé ; remplace la détection automatique (stack non géré, découpage voulu).
+    modules: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

@@ -188,3 +188,21 @@ def test_config_rejects_unknown_keys(tmp_path):
     path.write_text("jira: {url: x, tokn: y}\ngitlab: {url: y}\n")
     with pytest.raises(ValueError, match="tokn"):
         load(path)
+
+
+def test_list_dirs_keeps_only_directories():
+    tree = [
+        {"name": "web", "type": "tree"},
+        {"name": "README.md", "type": "blob"},
+        {"name": "api", "type": "tree"},
+    ]
+    session = FakeSession({"/repository/tree": FakeResponse(tree)})
+    assert GitLabClient("https://gl", session).list_dirs(1, "packages", "main") == ["web", "api"]
+    assert session.calls[0][2]["params"]["path"] == "packages"
+
+
+def test_config_keeps_modules_override(tmp_path):
+    path = tmp_path / "config.yaml"
+    repo = RepoConfig(modules={"billing": "services/billing"})
+    save(Config(JiraConfig("https://jira"), GitLabConfig("https://gl"), {"team/app": repo}), path)
+    assert load(path).repo("team/app").modules == {"billing": "services/billing"}

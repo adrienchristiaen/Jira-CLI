@@ -74,3 +74,80 @@ def test_custom_rc_format():
 def test_rejects_rc_format_not_starting_with_version():
     with pytest.raises(ValueError):
         next_rc([], FMT, "rc{n}-{version}", "core")
+
+
+def dirs_of(mapping):
+    return lambda path: mapping.get(path, [])
+
+
+def test_detects_gradle_modules_kotlin_and_groovy_syntax():
+    kts = 'rootProject.name = "x"\ninclude(":app", ":libs:core")\ninclude(\n  "api"\n)'
+    assert detect_modules({"settings.gradle.kts": kts}.get) == {
+        "app": "app",
+        "core": "libs/core",
+        "api": "api",
+    }
+    groovy = "include ':app', ':lib'"
+    assert detect_modules({"settings.gradle": groovy}.get) == {"app": "app", "lib": "lib"}
+
+
+def test_detects_npm_workspaces_with_globs_from_directory_listing():
+    package = '{"workspaces": ["packages/*", "tools/cli", "!packages/legacy"]}'
+    listing = dirs_of({"packages": ["web", "api", "notes.txt"]})
+    assert detect_modules({"package.json": package}.get, listing) == {
+        "web": "packages/web",
+        "api": "packages/api",
+        "notes.txt": "packages/notes.txt",
+        "cli": "tools/cli",
+    }
+
+
+def test_detects_yarn_style_workspaces_object():
+    package = '{"workspaces": {"packages": ["apps/web"]}}'
+    assert detect_modules({"package.json": package}.get) == {"web": "apps/web"}
+
+
+def test_package_json_without_workspaces_is_not_a_multi_module_repo():
+    assert detect_modules({"package.json": '{"name": "solo"}'}.get) == {}
+
+
+def test_detects_pnpm_workspace():
+    pnpm = "packages:\n  - 'apps/*'\n"
+    assert detect_modules({"pnpm-workspace.yaml": pnpm}.get, dirs_of({"apps": ["site"]})) == {
+        "site": "apps/site"
+    }
+
+
+def test_detects_cargo_workspace():
+    cargo = '[workspace]\nmembers = ["crates/*", "cli"]\n'
+    assert detect_modules({"Cargo.toml": cargo}.get, dirs_of({"crates": ["core", "io"]})) == {
+        "core": "crates/core",
+        "io": "crates/io",
+        "cli": "cli",
+    }
+
+
+def test_detects_go_work_single_and_block_forms():
+    work = "go 1.22\nuse ./tools\nuse (\n\t./svc/orders\n\t./svc/billing\n)\n"
+    assert detect_modules({"go.work": work}.get) == {
+        "tools": "tools",
+        "orders": "svc/orders",
+        "billing": "svc/billing",
+    }
+
+
+def test_detects_uv_workspace():
+    pyproject = '[tool.uv.workspace]\nmembers = ["libs/*"]\n'
+    assert detect_modules({"pyproject.toml": pyproject}.get, dirs_of({"libs": ["a"]})) == {
+        "a": "libs/a"
+    }
+
+
+def test_unreadable_or_moduleless_build_file_falls_through_to_next_stack():
+    files = {"package.json": "{not json", "pom.xml": POM}
+    assert detect_modules(files.get) == {"service": "service", "common": "libs/common"}
+
+
+def test_recursive_globs_are_skipped_not_guessed():
+    package = '{"workspaces": ["packages/**"]}'
+    assert detect_modules({"package.json": package}.get, dirs_of({"packages": ["a"]})) == {}

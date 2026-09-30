@@ -103,3 +103,27 @@ def test_wrong_column_needs_confirmation():
 def test_unknown_module_is_rejected():
     with pytest.raises(Aborted):
         plan(make_host(), ScriptedPrompter(["core,nope"]))
+
+
+def plan_with(host, repo, prompter=None):
+    return plan_release(
+        "PROJ-123", FakeTracker(), host, JIRA, lambda path: repo, prompter or ScriptedPrompter()
+    )
+
+
+def test_npm_monorepo_modules_are_detected_with_directory_listing():
+    host = make_host(
+        files={"package.json": '{"workspaces": ["packages/*"]}'},
+        dirs={"packages": ["web", "api"]},
+        paths=["packages/web/src/index.ts"],
+        existing_tags=["web-v3.1.0"],
+    )
+    [release] = plan_with(host, RepoConfig()).releases
+    assert (release.module, release.tag) == ("web", "web-v3.1.1-rc.1")
+
+
+def test_modules_from_config_replace_detection():
+    host = make_host(files={}, paths=["services/billing/main.go"], existing_tags=[])
+    repo = RepoConfig(modules={"billing": "services/billing", "orders": "services/orders"})
+    [release] = plan_with(host, repo).releases
+    assert (release.module, release.tag) == ("billing", "billing-v0.0.1-rc.1")

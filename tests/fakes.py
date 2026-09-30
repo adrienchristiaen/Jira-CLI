@@ -35,6 +35,7 @@ class FakeHost:
     mrs: list[MergeRequest] = field(default_factory=lambda: [MR])
     files: dict[str, str] = field(default_factory=dict)
     paths: list[str] = field(default_factory=list)
+    dirs: dict[str, list[str]] = field(default_factory=dict)
     existing_tags: list[str] = field(default_factory=list)
     variables: list[PipelineVariable] = field(default_factory=list)
     triggered: list[tuple[int, str, dict]] = field(default_factory=list)
@@ -47,6 +48,9 @@ class FakeHost:
 
     def read_file(self, project_id: int, path: str, ref: str) -> str | None:
         return self.files.get(path)
+
+    def list_dirs(self, project_id: int, path: str, ref: str) -> list[str]:
+        return self.dirs.get(path, [])
 
     def tags(self, project_id: int, search: str) -> list[str]:
         return [tag for tag in self.existing_tags if tag.startswith(search)]

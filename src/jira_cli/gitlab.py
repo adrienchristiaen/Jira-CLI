@@ -55,6 +55,12 @@ class GitLabClient:
             return None
         return check(response).text
 
+    def list_dirs(self, project_id: int, path: str, ref: str) -> list[str]:
+        """Noms des sous-dossiers de `path` (racine si vide) au ref donné."""
+        params = {"ref": ref, "path": path}
+        entries = self._paginate(f"/projects/{project_id}/repository/tree", params)
+        return [entry["name"] for entry in entries if entry["type"] == "tree"]
+
     def tags(self, project_id: int, search: str) -> list[str]:
         params = {"search": f"^{search}"} if search else {}
         return [
