@@ -166,3 +166,47 @@ def test_init_offers_retry_when_connection_fails(tmp_path, monkeypatch):
 def test_issue_label_truncates_summary():
     label = session._issue_label(Issue("PROJ-1", "x" * 80, "En cours"))
     assert label.startswith("PROJ-1       En cours") and label.endswith("…")
+
+
+def test_init_turns_a_pasted_board_url_into_base_url_and_board(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIRA_CLI_HOME", str(tmp_path))
+    boards = []
+
+    class Tracker(FakeTracker):
+        def statuses(self, board=""):
+            boards.append(board)
+            return super().statuses(board)
+
+    answers = ["https://jira.acme.fr/secure/RapidBoard.jspa?rapidView=4922", None, "pat"]
+    answers += [None, None, "gl"]  # GitLab
+    prompter = ScriptedPrompter(answers)
+    wizard.run_init(prompter, lambda c, t: Tracker(), lambda c, t: FakeTracker())
+    saved = config_module.load()
+    assert (saved.jira.url, saved.jira.board, saved.jira.auth) == (
+        "https://jira.acme.fr",
+        "4922",
+        "bearer",  # hors atlassian.net : Data Center proposé par défaut
+    )
+    assert boards == ["4922"]
+    assert (
+        "Type d'authentification",
+        "Jira Data Center / Server : Personal Access Token (recommandé)",
+    ) in prompter.asked
+    assert any("https://jira.acme.fr/secure/ViewProfile.jspa" in m for m in prompter.messages)
+    assert not any("id.atlassian.com" in m for m in prompter.messages)
+
+
+def test_init_hints_pat_when_cloud_auth_fails_on_data_center(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIRA_CLI_HOME", str(tmp_path))
+
+    class Refused(FakeTracker):
+        def whoami(self):
+            raise ApiError("GET https://jira.acme.fr/rest/api/2/myself -> 401", 401)
+
+    clients = iter([Refused(), FakeTracker()])
+    answers = ["https://jira.acme.fr", "Jira Cloud", "me@acme.fr", "bad", True]
+    answers += [None, "Jira Data Center", "pat", None, None, "gl"]
+    prompter = ScriptedPrompter(answers)
+    wizard.run_init(prompter, lambda c, t: next(clients), lambda c, t: FakeTracker())
+    assert any("Personal Access Token »" in m for m in prompter.messages)
+    assert config_module.load().jira.auth == "bearer"

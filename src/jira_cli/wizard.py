@@ -14,7 +14,7 @@ from . import config as config_module
 from .config import Config, GitLabConfig, JiraConfig, RepoConfig
 from .gitlab import GitLabClient
 from .http import ApiError, gitlab_session, jira_session
-from .jira import JiraClient
+from .jira import JiraClient, is_cloud, parse_url
 from .tokens import TokenStore
 
 NONE = "(ne pas changer la colonne du ticket)"
@@ -77,19 +77,37 @@ def _setup_jira(prompter, current: JiraConfig | None, store: TokenStore, jira_cl
     prompter.explain(
         "L'adresse que tu ouvres dans ton navigateur, par exemple\n"
         "  https://monentreprise.atlassian.net   (Jira Cloud)\n"
-        "  https://jira.monentreprise.fr         (Jira Data Center / Server)"
+        "  https://jira.monentreprise.fr         (Jira Data Center / Server)\n"
+        "L'URL de ton board marche aussi : j'en garde l'adresse et le numéro du board."
     )
     while True:
-        url = _ask_url(prompter, "URL Jira", current.url if current else "")
-        cloud = "atlassian.net" in url
+        pasted = _ask_url(prompter, "URL Jira", current.url if current else "")
+        url, board = parse_url(pasted)
+        if url != pasted:
+            prompter.explain(
+                f"Adresse Jira retenue : {url}" + (f" (board {board})" if board else "")
+            )
+        cloud = is_cloud(url)
+        recommended = "basic" if cloud else "bearer"
         modes = [
             ("basic", "Jira Cloud : email + API token"),
             ("bearer", "Jira Data Center / Server : Personal Access Token"),
         ]
-        default_auth = current.auth if current else ("basic" if cloud else "bearer")
+        modes = [
+            (value, f"{label} (recommandé)" if value == recommended else label)
+            for value, label in modes
+        ]
+        prompter.explain(
+            "Adresse en atlassian.net : Jira Cloud."
+            if cloud
+            else "Adresse hors atlassian.net : Jira Data Center / Server, donc Personal Access Token."
+        )
+        same_host = current is not None and parse_url(current.url)[0] == url
+        default_auth = current.auth if same_host else recommended
         auth = _pick(prompter, "Type d'authentification", modes, default_auth)
         jira = current or JiraConfig(url=url)
         jira.url, jira.auth = url, auth
+        jira.board = board or jira.board
         if auth == "basic":
             jira.user = prompter.ask("Email du compte Jira", jira.user)
             prompter.explain(
@@ -97,14 +115,30 @@ def _setup_jira(prompter, current: JiraConfig | None, store: TokenStore, jira_cl
             )
         else:
             prompter.explain(
-                "Crée un token dans Jira : avatar → Profil → Personal Access Tokens → Créer."
+                "Crée un token dans Jira : avatar → Profil → Personal Access Tokens → Créer :\n"
+                f"  {url}/secure/ViewProfile.jspa?selectedTab="
+                "com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens"
             )
         token = _ask_token(prompter, "Token Jira", store.get("jira"))
         tracker = jira_client(jira, token)
-        if _check(prompter, "Jira", tracker.whoami):
+        hint = _jira_hint(cloud, auth)
+        if _check(prompter, "Jira", tracker.whoami, hint):
             store.set("jira", token)
             return jira, tracker
         current = jira
+
+
+def _jira_hint(cloud: bool, auth: str):
+    def hint(status: int | None) -> str:
+        if status == 401 and auth == "basic" and not cloud:
+            return "Ton Jira n'est pas un Jira Cloud : choisis « Personal Access Token »."
+        if status in (401, 403):
+            return "Token refusé : vérifie-le, et le type d'authentification."
+        if status == 404:
+            return "Rien à cette adresse : vérifie l'URL Jira."
+        return ""
+
+    return hint
 
 
 def _setup_gitlab(prompter, current: GitLabConfig | None, store: TokenStore, gitlab_client):
@@ -135,9 +169,12 @@ def _setup_board(prompter, jira: JiraConfig, tracker, environments: list[str]) -
         "Pour te proposer la bonne étape, dis-moi à quoi correspondent les colonnes de ton board."
     )
     try:
-        statuses = tracker.statuses()
-    except NETWORK_ERRORS:  # liste indisponible : on passe en saisie libre
-        statuses = []
+        statuses = tracker.statuses(jira.board)
+    except NETWORK_ERRORS:  # board illisible : tous les statuts, sinon saisie libre
+        try:
+            statuses = tracker.statuses()
+        except NETWORK_ERRORS:
+            statuses = []
     jira.rc_from_statuses = _statuses(
         prompter, "Colonnes où la MR est prête pour une RC", statuses, jira.rc_from_statuses
     )
@@ -181,12 +218,14 @@ def _ask_token(prompter, question: str, existing: str | None) -> str:
         prompter.error("Token obligatoire.")
 
 
-def _check(prompter, name: str, whoami) -> bool:
+def _check(prompter, name: str, whoami, hint: Callable = lambda status: "") -> bool:
     try:
         prompter.success(f"Connecté à {name} en tant que {whoami()}")
         return True
-    except NETWORK_ERRORS as error:  # message brut : URL, code HTTP, réponse
+    except NETWORK_ERRORS as error:  # URL, code HTTP, résumé de la réponse
         prompter.error(f"Connexion à {name} impossible : {error}")
+        if advice := hint(getattr(error, "status", None)):
+            prompter.explain(advice)
         return not prompter.confirm("Ressaisir ?", True)
 
 

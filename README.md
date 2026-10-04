@@ -17,9 +17,11 @@ jira-cli             # session guidée (lance la configuration au premier usage)
 
 `jira-cli` sans argument ouvre une session dans le terminal, avec des menus aux flèches :
 
-1. Au premier lancement, la configuration (`jira-cli init`) : URL Jira avec exemples, type
-   d'authentification au menu, lien pour créer le token, test de connexion, puis les colonnes de
-   ton board qui correspondent à chaque étape (liste lue dans Jira). Relancer l'init repart des
+1. Au premier lancement, la configuration (`jira-cli init`) : URL Jira avec exemples (l'URL du
+   board marche aussi : l'adresse de base et le numéro du board en sont déduits), type
+   d'authentification au menu (Cloud si l'adresse est en atlassian.net, sinon Data Center avec un
+   Personal Access Token), lien pour créer le token, test de connexion, puis les colonnes de
+   ton board qui correspondent à chaque étape (statuts du board, lus dans Jira). Relancer l'init repart des
    valeurs actuelles.
 2. Tes tickets (`jira.jql`, par défaut ceux qui te sont assignés et pas terminés), avec leur colonne.
 3. Pour le ticket choisi : l'étape détectée depuis sa colonne et l'action suivante en tête de menu
