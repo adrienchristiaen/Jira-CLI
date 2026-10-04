@@ -3,8 +3,8 @@
 CLI Python déterministe qui fait avancer un ticket Jira dans ses étapes de livraison.
 Chaque action visible des autres (pipeline, transition Jira) est proposée puis confirmée.
 
-Étapes disponibles sur GitLab : **release candidate** (`release`) puis **MR de déploiement**
-dans le repo Kube, une par environnement (`deploy`).
+Étapes disponibles sur GitLab : **release candidate** (`release`), **MR de déploiement** dans le
+repo Kube, une par environnement (`deploy`), puis **release finale** (`release --final`).
 
 ## Installation
 
@@ -31,6 +31,20 @@ jira-cli release PROJ-123             # lance après confirmation
 5. Lit les variables de la pipeline du repo (avec leurs menus déroulants) et les pré-remplit.
 6. Lance une pipeline par module sur la branche de la MR, puis passe le ticket
    dans `jira.status_after_rc` si configuré.
+
+## Release finale
+
+```bash
+jira-cli release PROJ-123 --final --dry-run
+jira-cli release PROJ-123 --final
+```
+
+Même déroulé que la RC, avec trois différences :
+- la MR doit être mergeable (sinon l'outil s'arrête en donnant la raison GitLab : conflit,
+  pipeline, approbations) ; elle est mergée après confirmation. Déjà mergée, elle est reprise telle quelle ;
+- le tag proposé est la version de la RC en cours (`core-v1.4.1-rc.2` → `core-v1.4.1`) ;
+- la pipeline tourne sur la branche cible, avec `final_variables` par-dessus `variables`,
+  puis le ticket passe dans `jira.status_after_final`.
 
 ## Déploiement (MR Kube preprod / prod)
 
@@ -83,6 +97,8 @@ jira:
   rc_from_statuses: [MR]    # optionnel
   status_after_rc: À installer
   status_after_deploy: {preprod: En preprod, prod: En prod}   # optionnel
+  final_from_statuses: [En prod]   # optionnel
+  status_after_final: Livré        # optionnel
 gitlab:
   url: https://gitlab.example.com
   auth: token               # token = PRIVATE-TOKEN | bearer = OAuth
@@ -98,6 +114,8 @@ repos:
     variables:
       MODULE: "{module}"
       VERSION: "{version}"  # gabarits : {module} {version} {tag} {ticket} {branch} {mr}
+    final_variables:        # remplacent `variables` pour --final
+      RELEASE_TYPE: FINAL
 ```
 
 ## Stacks

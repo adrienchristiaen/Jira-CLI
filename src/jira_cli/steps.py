@@ -12,10 +12,12 @@ class Aborted(Exception):
     pass
 
 
-def pick_merge_request(ticket_key: str, host: CodeHost, prompter: Prompter) -> MergeRequest:
-    mrs = host.find_merge_requests(ticket_key)
+def pick_merge_request(
+    ticket_key: str, host: CodeHost, prompter: Prompter, include_merged: bool = False
+) -> MergeRequest:
+    mrs = host.find_merge_requests(ticket_key, include_merged)
     if not mrs:
-        raise Aborted(f"Aucune MR ouverte ne cite {ticket_key}.")
+        raise Aborted(f"Aucune MR {'' if include_merged else 'ouverte '}ne cite {ticket_key}.")
     if len(mrs) == 1:
         prompter.info(f"MR trouvée : {mrs[0].web_url}")
         return mrs[0]

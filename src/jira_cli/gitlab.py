@@ -27,11 +27,15 @@ class GitLabClient:
         self._session = session
         self._sleep = sleep
 
-    def find_merge_requests(self, ticket_key: str) -> list[MergeRequest]:
-        """MR ouvertes qui citent le ticket (titre, branche ou description), sur toute l'instance."""
+    def find_merge_requests(
+        self, ticket_key: str, include_merged: bool = False
+    ) -> list[MergeRequest]:
+        """MR ouvertes (et mergées si demandé) qui citent le ticket, sur toute l'instance."""
+        state = "all" if include_merged else "opened"
         found = self._paginate(
-            "/merge_requests", {"scope": "all", "state": "opened", "search": ticket_key}
+            "/merge_requests", {"scope": "all", "state": state, "search": ticket_key}
         )
+        found = [mr for mr in found if mr["state"] in ("opened", "merged")]
         key = re.compile(rf"(?<![A-Z0-9]){re.escape(ticket_key)}(?!\d)", re.IGNORECASE)
         return [
             _merge_request(mr)
@@ -96,6 +100,16 @@ class GitLabClient:
             self._session.post(f"{self._api}/projects/{project_id}/pipeline", json=body)
         ).json()
         return pipeline["web_url"]
+
+    def merge_status(self, mr: MergeRequest) -> str:
+        """`mergeable`, ou la raison du blocage (conflict, ci_must_pass, not_approved…)."""
+        url = f"{self._project(mr.project_id)}/merge_requests/{mr.iid}"
+        data = check(self._session.get(url)).json()
+        return data.get("detailed_merge_status") or data.get("merge_status") or "unknown"
+
+    def merge(self, mr: MergeRequest) -> None:
+        url = f"{self._project(mr.project_id)}/merge_requests/{mr.iid}/merge"
+        check(self._session.put(url, json={}))
 
     def merge_base(self, project_id: int, refs: list[str]) -> str:
         url = f"{self._project(project_id)}/repository/merge_base"
@@ -171,4 +185,5 @@ def _merge_request(data: dict) -> MergeRequest:
         source_branch=data["source_branch"],
         target_branch=data["target_branch"],
         web_url=data["web_url"],
+        state=data.get("state", "opened"),
     )

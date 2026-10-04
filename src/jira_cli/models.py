@@ -21,6 +21,7 @@ class MergeRequest:
     source_branch: str
     target_branch: str
     web_url: str
+    state: str = "opened"  # opened | merged
 
 
 @dataclass(frozen=True)
@@ -49,3 +50,4 @@ class ReleasePlan:
     merge_request: MergeRequest
     ref: str
     releases: list[ModuleRelease]
+    final: bool = False  # release finale : merge de la MR (si ouverte) puis tag sur la cible

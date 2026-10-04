@@ -38,9 +38,13 @@ class FakeSession:
     def post(self, url, **kwargs):
         return self._respond("POST", url, **kwargs)
 
+    def put(self, url, **kwargs):
+        return self._respond("PUT", url, **kwargs)
 
-def mr_json(iid, title, branch, description=""):
+
+def mr_json(iid, title, branch, description="", state="opened"):
     return {
+        "state": state,
         "project_id": 1,
         "iid": iid,
         "title": title,
@@ -245,3 +249,32 @@ def test_deploy_config_is_loaded_from_yaml(tmp_path):
     assert config.repo("team/app").deploy.environments == ["preprod"]
     save(config, path)
     assert load(path).repo("x").deploy.project == "team/kube"
+
+
+def test_find_merge_requests_can_include_merged_but_never_closed():
+    session = FakeSession(
+        {
+            "/merge_requests": FakeResponse(
+                [
+                    mr_json(1, "PROJ-123 a", "a", state="merged"),
+                    mr_json(2, "PROJ-123 b", "b", state="closed"),
+                ]
+            )
+        }
+    )
+    mrs = GitLabClient("https://gl", session).find_merge_requests("PROJ-123", include_merged=True)
+    assert [(mr.iid, mr.state) for mr in mrs] == [(1, "merged")]
+    assert session.calls[0][2]["params"]["state"] == "all"
+
+
+def test_merge_status_and_merge():
+    session = FakeSession(
+        {
+            "/merge_requests/7/merge": FakeResponse({}),
+            "/merge_requests/7": FakeResponse({"detailed_merge_status": "conflict"}),
+        }
+    )
+    client = GitLabClient("https://gl", session)
+    assert client.merge_status(sample_mr()) == "conflict"
+    client.merge(sample_mr())
+    assert session.calls[1][:2] == ("PUT", "https://gl/api/v4/projects/1/merge_requests/7/merge")

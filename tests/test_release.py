@@ -127,3 +127,57 @@ def test_modules_from_config_replace_detection():
     repo = RepoConfig(modules={"billing": "services/billing", "orders": "services/orders"})
     [release] = plan_with(host, repo).releases
     assert (release.module, release.tag) == ("billing", "billing-v0.0.1-rc.1")
+
+
+FINAL_REPO = RepoConfig(
+    variables={"MODULE": "{module}", "VERSION": "{version}"},
+    final_variables={"RELEASE_TYPE": "FINAL"},
+)
+FINAL_JIRA = JiraConfig(url="https://jira", status_after_final="Livré")
+
+
+def plan_final(host, prompter, tracker=None):
+    return plan_release(
+        "PROJ-123",
+        tracker or FakeTracker(),
+        host,
+        FINAL_JIRA,
+        lambda path: FINAL_REPO,
+        prompter,
+        final=True,
+    )
+
+
+def test_final_release_merges_then_tags_rc_version_on_target_branch():
+    host, tracker = make_host(existing_tags=["core-v1.4.0", "core-v1.4.1-rc.2"]), FakeTracker()
+    result = plan_final(host, ScriptedPrompter(), tracker)
+
+    assert result.ref == "main"
+    [release] = result.releases
+    assert release.tag == "core-v1.4.1"
+    assert release.variables == {"MODULE": "core", "VERSION": "1.4.1", "RELEASE_TYPE": "FINAL"}
+    assert host.merged == []
+
+    execute(result, tracker, host, FINAL_JIRA, ScriptedPrompter([True]))
+    assert host.merged == [7]
+    assert host.triggered[0][1] == "main"
+    assert tracker.transitions == [("PROJ-123", "Livré")]
+
+
+def test_final_release_of_already_merged_mr_does_not_merge_again():
+    merged = MR.__class__(**{**MR.__dict__, "state": "merged"})
+    host = make_host(mrs=[merged], mergeable="conflict")
+    result = plan_final(host, ScriptedPrompter())
+    execute(result, FakeTracker(), host, FINAL_JIRA, ScriptedPrompter([True]))
+    assert host.merged == [] and len(host.triggered) == 1
+
+
+def test_final_release_stops_when_mr_is_not_mergeable():
+    with pytest.raises(Aborted, match="conflict"):
+        plan_final(make_host(mergeable="conflict"), ScriptedPrompter())
+
+
+def test_rc_ignores_merged_mrs():
+    merged = MR.__class__(**{**MR.__dict__, "state": "merged"})
+    with pytest.raises(Aborted):
+        plan(make_host(mrs=[merged]), ScriptedPrompter())

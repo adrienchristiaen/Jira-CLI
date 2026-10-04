@@ -161,3 +161,11 @@ def test_latest_tag_prefers_highest_version_and_final_over_its_rcs():
     assert latest_tag(tags, fmt, rc, "core") == "core-v1.3.0-rc.10"
     assert latest_tag([*tags, "core-v1.3.0"], fmt, rc, "core") == "core-v1.3.0"
     assert latest_tag([], fmt, rc, "core") is None
+
+
+def test_next_final_takes_rc_in_progress_else_bumps():
+    from jira_cli.versioning import next_final
+
+    fmt, rc = "{module}-v{version}", "{version}-rc.{n}"
+    assert next_final(["core-v1.2.0", "core-v1.2.1-rc.3"], fmt, rc, "core") == (1, 2, 1)
+    assert next_final(["core-v1.2.0"], fmt, rc, "core", "minor") == (1, 3, 0)

@@ -32,6 +32,33 @@ def next_rc(
     Si une RC est déjà en cours au-delà de la dernière version finale, on la continue
     (rc.N+1). Sinon on incrémente la dernière version finale selon `bump`, en rc.1.
     """
+    latest_final, rcs = _scan(existing_tags, tag_format, rc_format, module, bump)
+    if rcs:
+        version = max(rcs)
+        return version, rcs[version] + 1
+    return _bump(latest_final, bump), 1
+
+
+def next_final(
+    existing_tags: list[str],
+    tag_format: str,
+    rc_format: str,
+    module: str | None,
+    bump: str = "patch",
+) -> Version:
+    """Version finale à poser : celle de la RC en cours, sinon la dernière finale incrémentée."""
+    latest_final, rcs = _scan(existing_tags, tag_format, rc_format, module, bump)
+    return max(rcs) if rcs else _bump(latest_final, bump)
+
+
+def format_final_tag(tag_format: str, module: str | None, version: Version) -> str:
+    return tag_format.format(module=module or "", version=_str(version))
+
+
+def _scan(
+    existing_tags: list[str], tag_format: str, rc_format: str, module: str | None, bump: str
+) -> tuple[Version, dict[Version, int]]:
+    """(dernière version finale, {version: dernier n° de RC} des RC au-delà de cette finale)."""
     if bump not in BUMPS:
         raise ValueError(f"bump doit valoir {', '.join(BUMPS)}")
     pattern = _tag_pattern(tag_format, rc_format, module)
@@ -46,13 +73,8 @@ def next_rc(
             finals.append(version)
         else:
             rcs[version] = max(rcs.get(version, 0), int(match["rc"]))
-
     latest_final = max(finals, default=(0, 0, 0))
-    in_progress = [v for v in rcs if v > latest_final]
-    if in_progress:
-        version = max(in_progress)
-        return version, rcs[version] + 1
-    return _bump(latest_final, bump), 1
+    return latest_final, {v: n for v, n in rcs.items() if v > latest_final}
 
 
 def latest_tag(

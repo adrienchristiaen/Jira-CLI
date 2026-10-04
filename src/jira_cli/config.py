@@ -33,6 +33,9 @@ class JiraConfig:
     rc_from_statuses: list[str] = field(default_factory=list)
     # Statut visé après le lancement de la RC ; vide = pas de transition.
     status_after_rc: str = ""
+    # Idem pour la release finale (--final).
+    final_from_statuses: list[str] = field(default_factory=list)
+    status_after_final: str = ""
     # Statut visé après création de la MR de déploiement, par environnement ({prod: En prod}).
     status_after_deploy: dict[str, str] = field(default_factory=dict)
 
@@ -82,6 +85,8 @@ class RepoConfig:
     # Valeurs pré-remplies des variables de la pipeline de tag. Gabarits disponibles :
     # {module} {version} {tag} {ticket} {branch} {mr}
     variables: dict[str, str] = field(default_factory=dict)
+    # Valeurs qui remplacent `variables` pour la release finale (ex. RELEASE_TYPE: FINAL).
+    final_variables: dict[str, str] = field(default_factory=dict)
     # {module: chemin} imposé ; remplace la détection automatique (stack non géré, découpage voulu).
     modules: dict[str, str] = field(default_factory=dict)
     deploy: DeployConfig = field(default_factory=DeployConfig)

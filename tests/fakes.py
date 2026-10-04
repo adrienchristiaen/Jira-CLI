@@ -41,12 +41,20 @@ class FakeHost:
     triggered: list[tuple[int, str, dict]] = field(default_factory=list)
     # Contenu propre à un ref : {(ref, chemin): texte}, prioritaire sur `files`.
     files_at: dict[tuple[str, str], str] = field(default_factory=dict)
+    mergeable: str = "mergeable"
+    merged: list[int] = field(default_factory=list)
     open_mrs: dict[str, str] = field(default_factory=dict)  # branche source -> URL
     commits: list[tuple] = field(default_factory=list)
     created_mrs: list[tuple] = field(default_factory=list)
 
-    def find_merge_requests(self, ticket_key: str) -> list[MergeRequest]:
-        return self.mrs
+    def find_merge_requests(self, ticket_key: str, include_merged: bool = False):
+        return [mr for mr in self.mrs if include_merged or mr.state == "opened"]
+
+    def merge_status(self, mr: MergeRequest) -> str:
+        return self.mergeable
+
+    def merge(self, mr: MergeRequest) -> None:
+        self.merged.append(mr.iid)
 
     def changed_paths(self, mr: MergeRequest) -> list[str]:
         return self.paths
