@@ -1,4 +1,5 @@
 import pytest
+from fakes import MR
 
 from jira_cli.config import Config, GitLabConfig, JiraConfig, RepoConfig, load, save
 from jira_cli.gitlab import GitLabClient
@@ -363,3 +364,67 @@ def test_linked_issues_are_searched_on_the_board():
     client = JiraClient("https://jira", session)
     assert client.linked_issues("PROJ-123", "77") == [Issue("MEP-9", "MEP", "En preprod")]
     assert session.calls[0][2]["params"]["jql"] == 'issue in linkedIssues("PROJ-123")'
+
+
+def test_search_reads_the_keys_of_linked_tickets():
+    issue = {
+        "key": "PROJ-1",
+        "fields": {
+            "summary": "s",
+            "status": {"name": "En cours"},
+            "issuelinks": [{"outwardIssue": {"key": "MEP-9"}}, {"inwardIssue": {"key": "OPS-2"}}],
+        },
+    }
+    session = FakeSession({"/search": FakeResponse({"issues": [issue]})})
+    found = JiraClient("https://jira", session).search("x")
+    assert found == [Issue("PROJ-1", "s", "En cours", ("MEP-9", "OPS-2"))]
+    assert "issuelinks" in session.calls[0][2]["params"]["fields"]
+
+
+def test_dev_links_merge_remote_links_and_development_panel():
+    session = FakeSession(
+        {
+            "/issue/PROJ-1/remotelink": FakeResponse(
+                [{"object": {"url": "https://gitlab.acme.fr/a/b/-/merge_requests/3"}}]
+            ),
+            "/dev-status/1.0/issue/summary": FakeResponse(
+                {"summary": {"pullrequest": {"byInstanceType": {"GitLab": {}}}}}
+            ),
+            "/dev-status/1.0/issue/detail": FakeResponse(
+                {
+                    "detail": [
+                        {"pullRequests": [{"url": "https://gitlab.acme.fr/a/c/-/merge_requests/4"}]}
+                    ]
+                }
+            ),
+            "/issue/PROJ-1": FakeResponse({"id": "1001", "key": "PROJ-1"}),
+        }
+    )
+    links = JiraClient("https://jira", session).dev_links("PROJ-1")
+    assert links == [
+        "https://gitlab.acme.fr/a/b/-/merge_requests/3",
+        "https://gitlab.acme.fr/a/c/-/merge_requests/4",
+    ]
+    detail = next(call for call in session.calls if "detail" in call[1])
+    assert detail[2]["params"]["applicationType"] == "GitLab"
+
+
+def test_dev_links_tolerate_a_jira_without_development_panel():
+    session = FakeSession(
+        {
+            "/issue/PROJ-1/remotelink": FakeResponse([]),
+            "/dev-status/": FakeResponse(status=404),
+            "/issue/PROJ-1": FakeResponse({"id": "1001", "key": "PROJ-1"}),
+        }
+    )
+    assert JiraClient("https://jira", session).dev_links("PROJ-1") == []
+
+
+def test_head_pipeline_status_of_a_merge_request():
+    session = FakeSession(
+        {"/merge_requests/7": FakeResponse({"head_pipeline": {"status": "failed"}})}
+    )
+    client = GitLabClient("https://gl", session)
+    assert client.pipeline_status(MR) == "failed"
+    session.routes["/merge_requests/7"] = FakeResponse({"head_pipeline": None})
+    assert client.pipeline_status(MR) == ""

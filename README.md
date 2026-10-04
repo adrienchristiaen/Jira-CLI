@@ -10,32 +10,53 @@ repo Kube, une par environnement (`deploy`), puis **release finale** (`release -
 
 ```bash
 pip install -e '.[dev]'
-jira-cli             # session guidée (lance la configuration au premier usage)
+jira-cli             # dashboard (lance la configuration au premier usage)
 ```
 
-## Session guidée
+## Configuration : l'adresse de Jira et un token
 
-`jira-cli` sans argument ouvre une session dans le terminal, avec des menus aux flèches :
+Au premier lancement (ou avec `jira-cli init`), seules deux choses sont demandées : l'adresse de
+ton Jira (l'URL d'un board marche aussi) et ton token (Personal Access Token hors atlassian.net,
+email + API token sur Jira Cloud). Tout le reste est déduit :
 
-1. Au premier lancement, la configuration (`jira-cli init`) : URL Jira avec exemples (l'URL du
-   board marche aussi : l'adresse de base et le numéro du board en sont déduits), type
-   d'authentification au menu (Cloud si l'adresse est en atlassian.net, sinon Data Center avec un
-   Personal Access Token), lien pour créer le token, test de connexion, puis tes boards : ceux des
-   projets de tes tickets, le board de l'équipe et celui des mises en prod devinés d'après leur
-   nom (une question courte si c'est ambigu). Les colonnes de chaque étape sont proposées depuis
-   le bon board, avec une valeur devinée d'après leur nom (entrée = valider).
-   Avec un board des mises en prod, les déploiements et la release finale font avancer le ticket
-   de mise en prod lié à ton ticket (lien Jira) qui se trouve sur ce board, pas ton ticket. Relancer l'init repart des
-   valeurs actuelles.
-2. Tes tickets (`jira.jql`, par défaut ceux qui te sont assignés et pas terminés), avec leur colonne.
-3. Pour le ticket choisi : l'étape détectée depuis sa colonne et l'action suivante en tête de menu
-   (RC → déploiement preprod → prod → release finale). Chaque action affiche son plan et demande
-   confirmation avant de lancer quoi que ce soit. `jira-cli --dry-run` n'affiche que les plans.
+| Déduit | Comment |
+|---|---|
+| Qui tu es | le token (`/myself`) |
+| Tes boards | ceux des projets de tes tickets, et des tickets qui leur sont liés (ticket MEP) |
+| Rôle de chaque board | nom (« MEP », « Prod », « Déploiement »…) et colonnes : sans colonne de revue mais avec des colonnes d'environnement, c'est un board de mises en prod |
+| Colonnes de chaque étape | leur nom (« En revue », « A Recetter », « En preprod », « Livré »…) |
+| Ticket de mise en prod | le ticket lié qui est sur le board des mises en prod |
+| GitLab | les liens des tickets (liens web, panneau Développement) qui pointent vers une MR |
 
-Les sous-commandes ci-dessous restent disponibles pour les scripts.
+Une question courte n'apparaît que si c'est ambigu (deux boards d'équipe possibles) ou
+introuvable (une colonne sans nom parlant, aucun lien GitLab). Un résumé s'affiche ensuite :
+« non » permet de tout corriger. Le token GitLab est demandé à la fin, le repo des manifestes
+Kube au premier déploiement. Relancer `jira-cli init` (ou `c` dans le dashboard) repart des
+valeurs actuelles.
 
 La config est dans `~/.config/jira-cli/` (ou `$JIRA_CLI_HOME`) :
 `config.yaml` en clair, `tokens.enc` chiffré, `key` en 0600 (ou la clé dans `$JIRA_CLI_KEY`).
+
+## Dashboard
+
+`jira-cli` sans argument ouvre un dashboard dans le terminal : tes tickets (`jira.jql`), leur
+colonne, l'étape détectée (celle du ticket de mise en prod s'il existe), l'action proposée, la MR
+GitLab (mergeable, conflit, à approuver…) et sa dernière pipeline, avec le détail du ticket
+sélectionné en bas.
+
+| Touche | Action |
+|---|---|
+| `entrée` | lancer l'étape proposée (RC → déploiement preprod → prod → release finale) |
+| `a` | choisir une autre action |
+| `o` | ouvrir la MR dans le navigateur |
+| `t` | afficher un ticket par sa clé |
+| `r` | rafraîchir |
+| `c` | corriger la configuration |
+| `q` | quitter |
+
+Une action efface le dashboard le temps d'afficher son plan et de demander confirmation, puis
+revient avec le ticket rechargé. `jira-cli --dry-run` n'affiche que les plans.
+Les sous-commandes ci-dessous restent disponibles pour les scripts.
 
 ## Release candidate
 
@@ -167,6 +188,10 @@ repos:
 Sans module détecté, un seul tag est posé pour le repo.
 
 ## Architecture
+
+`discovery.py` déduit la config de Jira (fonctions pures), `wizard.py` ne fait que poser les
+questions restantes. `overview.py` calcule ce que le dashboard affiche pour un ticket,
+`dashboard.py` (Textual) l'affiche et lance les actions de `actions.py`.
 
 Les étapes (`release.py`) ne dépendent que des interfaces de `ports.py` :
 `IssueTracker` (Jira), `CodeHost` (GitLab), `Prompter` (terminal). `deploy.py` suit le même

@@ -1,11 +1,11 @@
-"""Point d'entrée : `jira-cli` (session guidée), `jira-cli init`, `release`, `deploy`."""
+"""Point d'entrée : `jira-cli` (dashboard), `jira-cli init`, `release`, `deploy`."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 
-from . import actions, session, wizard
+from . import actions, wizard
 from .http import ApiError
 from .prompt import ConsolePrompter
 from .steps import Aborted
@@ -15,7 +15,9 @@ from .versioning import BUMPS
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jira-cli", description=__doc__)
     parser.add_argument(
-        "--dry-run", action="store_true", help="session guidée : affiche les plans sans rien lancer"
+        "--dry-run",
+        action="store_true",
+        help="dashboard : les actions affichent leur plan sans rien lancer",
     )
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("init", help="configure Jira, GitLab et les tokens (chiffrés en local)")
@@ -45,7 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     prompter = ConsolePrompter()
     try:
         if args.command is None:
-            return session.run(prompter, args.dry_run)
+            from . import dashboard  # Textual n'est chargé que pour le dashboard
+
+            return dashboard.run(args.dry_run)
         if args.command == "init":
             wizard.run_init(prompter)
             return 0

@@ -25,6 +25,14 @@ class Action:
             return f"Déploiement {self.env} (MR dans le repo Kube)"
         return "Release finale (merge de la MR + tag final)"
 
+    @property
+    def short(self) -> str:
+        if self.kind == "release":
+            return "Release candidate"
+        if self.kind == "deploy":
+            return f"Déploiement {self.env}"
+        return "Release finale"
+
 
 @dataclass(frozen=True)
 class Stage:

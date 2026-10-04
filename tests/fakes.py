@@ -28,6 +28,8 @@ class FakeTracker:
     board_projects: list[list[str]] = field(default_factory=list)
     linked: list[Issue] = field(default_factory=list)  # tickets liés, sur le board demandé
     linked_boards: list[str] = field(default_factory=list)
+    project_boards: dict[str, list[Board]] = field(default_factory=dict)  # sinon all_boards
+    links: list[str] = field(default_factory=list)  # liens web / panneau Développement
 
     def get_issue(self, key: str) -> Issue:
         return self.issue
@@ -49,7 +51,12 @@ class FakeTracker:
 
     def boards(self, projects: list[str]) -> list[Board]:
         self.board_projects.append(projects)
-        return self.all_boards
+        if not self.project_boards:
+            return self.all_boards
+        return [b for p in projects for b in self.project_boards.get(p, [])]
+
+    def dev_links(self, key: str) -> list[str]:
+        return self.links
 
     def statuses(self, board: str = "") -> list[str]:
         if board in self.board_statuses:
@@ -69,6 +76,7 @@ class FakeHost:
     # Contenu propre à un ref : {(ref, chemin): texte}, prioritaire sur `files`.
     files_at: dict[tuple[str, str], str] = field(default_factory=dict)
     mergeable: str = "mergeable"
+    pipeline: str = "success"
     merged: list[int] = field(default_factory=list)
     open_mrs: dict[str, str] = field(default_factory=dict)  # branche source -> URL
     commits: list[tuple] = field(default_factory=list)
@@ -79,6 +87,9 @@ class FakeHost:
 
     def merge_status(self, mr: MergeRequest) -> str:
         return self.mergeable
+
+    def pipeline_status(self, mr: MergeRequest) -> str:
+        return self.pipeline
 
     def merge(self, mr: MergeRequest) -> None:
         self.merged.append(mr.iid)
@@ -128,6 +139,7 @@ class ScriptedPrompter:
         self.messages.append(message)
 
     def confirm(self, question: str, default: bool = True) -> bool:
+        self.asked.append((question, str(default)))
         answer = self._next()
         return default if answer is None else bool(answer)
 
@@ -148,6 +160,7 @@ class ScriptedPrompter:
         return list(checked) if answer is None else [items.index(name) for name in answer]
 
     def secret(self, question: str) -> str:
+        self.asked.append((question, ""))
         answer = self._next()
         return "" if answer is None else str(answer)
 
