@@ -29,6 +29,8 @@ class JiraConfig:
     url: str
     auth: str = "bearer"
     user: str = ""
+    # Tickets proposés par `jira-cli` sans argument.
+    jql: str = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
     # Statuts depuis lesquels une RC a du sens ; vide = pas de contrôle.
     rc_from_statuses: list[str] = field(default_factory=list)
     # Statut visé après le lancement de la RC ; vide = pas de transition.

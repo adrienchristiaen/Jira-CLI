@@ -278,3 +278,13 @@ def test_merge_status_and_merge():
     assert client.merge_status(sample_mr()) == "conflict"
     client.merge(sample_mr())
     assert session.calls[1][:2] == ("PUT", "https://gl/api/v4/projects/1/merge_requests/7/merge")
+
+
+def test_jira_search_falls_back_to_cloud_endpoint():
+    issues = {"issues": [{"key": "PROJ-1", "fields": {"summary": "S", "status": {"name": "MR"}}}]}
+    session = FakeSession(
+        {"/search/jql": FakeResponse(issues), "/search": FakeResponse(status=410)}
+    )
+    found = JiraClient("https://jira", session).search("assignee = currentUser()")
+    assert [(i.key, i.status) for i in found] == [("PROJ-1", "MR")]
+    assert session.calls[-1][2]["params"]["jql"] == "assignee = currentUser()"
