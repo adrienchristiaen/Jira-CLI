@@ -18,12 +18,22 @@ class IssueTracker(Protocol):
     def transition(self, key: str, status: str) -> None: ...
 
 
+# Projet GitLab : son id numérique ou son chemin complet (ex. team/kube-manifests).
+ProjectRef = int | str
+
+
 class CodeHost(Protocol):
-    def find_merge_requests(self, ticket_key: str) -> list[MergeRequest]: ...
+    def find_merge_requests(
+        self, ticket_key: str, include_merged: bool = False
+    ) -> list[MergeRequest]: ...
+
+    def merge_status(self, mr: MergeRequest) -> str: ...
+
+    def merge(self, mr: MergeRequest) -> None: ...
 
     def changed_paths(self, mr: MergeRequest) -> list[str]: ...
 
-    def read_file(self, project_id: int, path: str, ref: str) -> str | None: ...
+    def read_file(self, project_id: ProjectRef, path: str, ref: str) -> str | None: ...
 
     def list_dirs(self, project_id: int, path: str, ref: str) -> list[str]: ...
 
@@ -32,6 +42,28 @@ class CodeHost(Protocol):
     def pipeline_variables(self, project_path: str, ref: str) -> list[PipelineVariable]: ...
 
     def trigger_pipeline(self, project_id: int, ref: str, variables: dict[str, str]) -> str: ...
+
+    def merge_base(self, project_id: int, refs: list[str]) -> str: ...
+
+    def find_open_merge_request(self, project: ProjectRef, source_branch: str) -> str | None: ...
+
+    def commit_files(
+        self,
+        project: ProjectRef,
+        branch: str,
+        start_branch: str,
+        message: str,
+        files: dict[str, str],
+    ) -> None: ...
+
+    def create_merge_request(
+        self,
+        project: ProjectRef,
+        source_branch: str,
+        target_branch: str,
+        title: str,
+        description: str,
+    ) -> str: ...
 
 
 class Prompter(Protocol):

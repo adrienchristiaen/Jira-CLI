@@ -27,11 +27,15 @@ class GitLabClient:
         self._session = session
         self._sleep = sleep
 
-    def find_merge_requests(self, ticket_key: str) -> list[MergeRequest]:
-        """MR ouvertes qui citent le ticket (titre, branche ou description), sur toute l'instance."""
+    def find_merge_requests(
+        self, ticket_key: str, include_merged: bool = False
+    ) -> list[MergeRequest]:
+        """MR ouvertes (et mergées si demandé) qui citent le ticket, sur toute l'instance."""
+        state = "all" if include_merged else "opened"
         found = self._paginate(
-            "/merge_requests", {"scope": "all", "state": "opened", "search": ticket_key}
+            "/merge_requests", {"scope": "all", "state": state, "search": ticket_key}
         )
+        found = [mr for mr in found if mr["state"] in ("opened", "merged")]
         key = re.compile(rf"(?<![A-Z0-9]){re.escape(ticket_key)}(?!\d)", re.IGNORECASE)
         return [
             _merge_request(mr)
@@ -48,8 +52,8 @@ class GitLabClient:
                     paths.append(path)
         return paths
 
-    def read_file(self, project_id: int, path: str, ref: str) -> str | None:
-        url = f"{self._api}/projects/{project_id}/repository/files/{quote(path, safe='')}/raw"
+    def read_file(self, project_id: int | str, path: str, ref: str) -> str | None:
+        url = f"{self._project(project_id)}/repository/files/{quote(path, safe='')}/raw"
         response = self._session.get(url, params={"ref": ref})
         if response.status_code == 404:
             return None
@@ -97,6 +101,67 @@ class GitLabClient:
         ).json()
         return pipeline["web_url"]
 
+    def merge_status(self, mr: MergeRequest) -> str:
+        """`mergeable`, ou la raison du blocage (conflict, ci_must_pass, not_approved…)."""
+        url = f"{self._project(mr.project_id)}/merge_requests/{mr.iid}"
+        data = check(self._session.get(url)).json()
+        return data.get("detailed_merge_status") or data.get("merge_status") or "unknown"
+
+    def merge(self, mr: MergeRequest) -> None:
+        url = f"{self._project(mr.project_id)}/merge_requests/{mr.iid}/merge"
+        check(self._session.put(url, json={}))
+
+    def merge_base(self, project_id: int, refs: list[str]) -> str:
+        url = f"{self._project(project_id)}/repository/merge_base"
+        return check(self._session.get(url, params={"refs[]": refs})).json()["id"]
+
+    def find_open_merge_request(self, project: int | str, source_branch: str) -> str | None:
+        params = {"state": "opened", "source_branch": source_branch}
+        found = check(self._session.get(f"{self._project(project)}/merge_requests", params=params))
+        return next((mr["web_url"] for mr in found.json()), None)
+
+    def commit_files(
+        self,
+        project: int | str,
+        branch: str,
+        start_branch: str,
+        message: str,
+        files: dict[str, str],
+    ) -> None:
+        """Un commit sur `branch`, recréée depuis `start_branch` (relancer repart de zéro)."""
+        body = {
+            "branch": branch,
+            "start_branch": start_branch,
+            "force": True,
+            "commit_message": message,
+            "actions": [
+                {"action": "update", "file_path": path, "content": content}
+                for path, content in files.items()
+            ],
+        }
+        check(self._session.post(f"{self._project(project)}/repository/commits", json=body))
+
+    def create_merge_request(
+        self,
+        project: int | str,
+        source_branch: str,
+        target_branch: str,
+        title: str,
+        description: str,
+    ) -> str:
+        body = {
+            "source_branch": source_branch,
+            "target_branch": target_branch,
+            "title": title,
+            "description": description,
+            "remove_source_branch": True,
+        }
+        mr = check(self._session.post(f"{self._project(project)}/merge_requests", json=body))
+        return mr.json()["web_url"]
+
+    def _project(self, project: int | str) -> str:
+        return f"{self._api}/projects/{quote(str(project), safe='')}"
+
     def _paginate(self, path: str, params: dict) -> list[dict]:
         items: list[dict] = []
         page = "1"
@@ -120,4 +185,5 @@ def _merge_request(data: dict) -> MergeRequest:
         source_branch=data["source_branch"],
         target_branch=data["target_branch"],
         web_url=data["web_url"],
+        state=data.get("state", "opened"),
     )

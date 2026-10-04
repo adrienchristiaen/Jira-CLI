@@ -38,9 +38,13 @@ class FakeSession:
     def post(self, url, **kwargs):
         return self._respond("POST", url, **kwargs)
 
+    def put(self, url, **kwargs):
+        return self._respond("PUT", url, **kwargs)
 
-def mr_json(iid, title, branch, description=""):
+
+def mr_json(iid, title, branch, description="", state="opened"):
     return {
+        "state": state,
         "project_id": 1,
         "iid": iid,
         "title": title,
@@ -206,3 +210,71 @@ def test_config_keeps_modules_override(tmp_path):
     repo = RepoConfig(modules={"billing": "services/billing"})
     save(Config(JiraConfig("https://jira"), GitLabConfig("https://gl"), {"team/app": repo}), path)
     assert load(path).repo("team/app").modules == {"billing": "services/billing"}
+
+
+def test_deploy_repo_calls_encode_project_path():
+    session = FakeSession(
+        {
+            "/merge_base": FakeResponse({"id": "abc"}),
+            "/repository/commits": FakeResponse({}),
+            "/merge_requests": lambda kw: FakeResponse(
+                {"web_url": "https://gl/kube/1"} if "json" in kw else [{"web_url": "https://gl/0"}]
+            ),
+        }
+    )
+    client = GitLabClient("https://gl", session)
+
+    assert client.merge_base(1, ["main", "feature"]) == "abc"
+    assert client.find_open_merge_request("team/kube", "deploy/X-prod") == "https://gl/0"
+    client.commit_files("team/kube", "deploy/X-prod", "main", "msg", {"a.yaml": "x: 1\n"})
+    url = client.create_merge_request("team/kube", "deploy/X-prod", "main", "t", "d")
+
+    assert url == "https://gl/kube/1"
+    urls = [call[1] for call in session.calls]
+    assert urls[1] == "https://gl/api/v4/projects/team%2Fkube/merge_requests"
+    commit = session.calls[2][2]["json"]
+    assert commit["force"] is True and commit["start_branch"] == "main"
+    assert commit["actions"] == [{"action": "update", "file_path": "a.yaml", "content": "x: 1\n"}]
+    assert session.calls[3][2]["json"]["source_branch"] == "deploy/X-prod"
+
+
+def test_deploy_config_is_loaded_from_yaml(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "jira: {url: https://jira}\ngitlab: {url: https://gl}\n"
+        "repos:\n  default:\n    deploy: {project: team/kube, environments: [preprod]}\n"
+    )
+    config = load(path)
+    assert config.repo("team/app").deploy.project == "team/kube"
+    assert config.repo("team/app").deploy.environments == ["preprod"]
+    save(config, path)
+    assert load(path).repo("x").deploy.project == "team/kube"
+
+
+def test_find_merge_requests_can_include_merged_but_never_closed():
+    session = FakeSession(
+        {
+            "/merge_requests": FakeResponse(
+                [
+                    mr_json(1, "PROJ-123 a", "a", state="merged"),
+                    mr_json(2, "PROJ-123 b", "b", state="closed"),
+                ]
+            )
+        }
+    )
+    mrs = GitLabClient("https://gl", session).find_merge_requests("PROJ-123", include_merged=True)
+    assert [(mr.iid, mr.state) for mr in mrs] == [(1, "merged")]
+    assert session.calls[0][2]["params"]["state"] == "all"
+
+
+def test_merge_status_and_merge():
+    session = FakeSession(
+        {
+            "/merge_requests/7/merge": FakeResponse({}),
+            "/merge_requests/7": FakeResponse({"detailed_merge_status": "conflict"}),
+        }
+    )
+    client = GitLabClient("https://gl", session)
+    assert client.merge_status(sample_mr()) == "conflict"
+    client.merge(sample_mr())
+    assert session.calls[1][:2] == ("PUT", "https://gl/api/v4/projects/1/merge_requests/7/merge")
