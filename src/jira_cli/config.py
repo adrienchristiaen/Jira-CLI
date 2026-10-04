@@ -29,6 +29,8 @@ class JiraConfig:
     url: str
     auth: str = "bearer"
     user: str = ""
+    # Board dont les colonnes sont proposées à l'init (rapidView) ; vide = tous les statuts.
+    board: str = ""
     # Tickets proposés par `jira-cli` sans argument.
     jql: str = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
     # Statuts depuis lesquels une RC a du sens ; vide = pas de contrôle.

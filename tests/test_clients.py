@@ -2,8 +2,8 @@ import pytest
 
 from jira_cli.config import Config, GitLabConfig, JiraConfig, RepoConfig, load, save
 from jira_cli.gitlab import GitLabClient
-from jira_cli.http import ApiError, gitlab_session, jira_session
-from jira_cli.jira import JiraClient
+from jira_cli.http import ApiError, check, gitlab_session, jira_session
+from jira_cli.jira import JiraClient, parse_url
 from jira_cli.tokens import TokenStore
 
 
@@ -288,3 +288,54 @@ def test_jira_search_falls_back_to_cloud_endpoint():
     found = JiraClient("https://jira", session).search("assignee = currentUser()")
     assert [(i.key, i.status) for i in found] == [("PROJ-1", "MR")]
     assert session.calls[-1][2]["params"]["jql"] == "assignee = currentUser()"
+
+
+@pytest.mark.parametrize(
+    "pasted, expected",
+    [
+        (
+            "https://jira.agilefabric.fr.carrefour.com/secure/RapidBoard.jspa?rapidView=4922",
+            ("https://jira.agilefabric.fr.carrefour.com", "4922"),
+        ),
+        ("https://acme.fr/jira/browse/PROJ-1", ("https://acme.fr/jira", "")),
+        ("https://acme.fr/jira", ("https://acme.fr/jira", "")),
+        (
+            "https://acme.atlassian.net/jira/software/projects/P/boards/7",
+            ("https://acme.atlassian.net", "7"),
+        ),
+        ("https://acme.atlassian.net", ("https://acme.atlassian.net", "")),
+    ],
+)
+def test_parse_url_keeps_base_and_board(pasted, expected):
+    assert parse_url(pasted) == expected
+
+
+def test_error_summary_is_one_line_for_html_and_json():
+    html = "\n\n<html>\n<head>\n    <title>Unauthorized (401)</title>\n<script>x</script>"
+    with pytest.raises(ApiError) as error:
+        check(FakeResponse(status=401, text=html))
+    assert str(error.value) == "GET http://fake -> 401 Unauthorized (401)"
+    assert error.value.status == 401
+    with pytest.raises(ApiError, match=r"-> 400 Champ requis$"):
+        check(FakeResponse(status=400, text='{"errorMessages": ["Champ requis"]}'))
+
+
+def test_statuses_of_a_board_are_limited_to_its_columns():
+    columns = [{"statuses": [{"id": "1"}]}, {"statuses": [{"id": "3"}]}]
+    session = FakeSession(
+        {
+            "/rest/agile/1.0/board/42/configuration": FakeResponse(
+                {"columnConfig": {"columns": columns}}
+            ),
+            "/rest/api/2/status": FakeResponse(
+                [
+                    {"id": "1", "name": "MR"},
+                    {"id": "2", "name": "Autre"},
+                    {"id": "3", "name": "En prod"},
+                ]
+            ),
+        }
+    )
+    client = JiraClient("https://jira.acme.fr", session)
+    assert client.statuses("42") == ["En prod", "MR"]
+    assert client.statuses() == ["Autre", "En prod", "MR"]

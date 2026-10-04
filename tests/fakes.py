@@ -38,7 +38,7 @@ class FakeTracker:
     def whoami(self) -> str:
         return "Adrien"
 
-    def statuses(self) -> list[str]:
+    def statuses(self, board: str = "") -> list[str]:
         return ["MR", "À installer", "En preprod", "En prod", "Validé prod", "Livré"]
 
 
