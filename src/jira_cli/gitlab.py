@@ -110,6 +110,12 @@ class GitLabClient:
         data = check(self._session.get(url)).json()
         return data.get("detailed_merge_status") or data.get("merge_status") or "unknown"
 
+    def pipeline_status(self, mr: MergeRequest) -> str:
+        """Statut de la dernière pipeline de la MR (success, failed, running…), vide sinon."""
+        url = f"{self._project(mr.project_id)}/merge_requests/{mr.iid}"
+        pipeline = check(self._session.get(url)).json().get("head_pipeline") or {}
+        return pipeline.get("status", "")
+
     def merge(self, mr: MergeRequest) -> None:
         url = f"{self._project(mr.project_id)}/merge_requests/{mr.iid}/merge"
         check(self._session.put(url, json={}))

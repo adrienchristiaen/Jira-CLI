@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from . import config as config_module
 from . import deploy as deploy_step
 from . import release as release_step
-from .config import Config
+from .config import Config, RepoConfig
 from .gitlab import GitLabClient
 from .http import gitlab_session, jira_session
 from .jira import JiraClient
 from .ports import Prompter
+from .steps import Aborted
 from .tokens import TokenStore
 
 
@@ -54,6 +55,7 @@ def deploy(
     environments: list[str] | None = None,
     dry_run: bool = False,
 ) -> None:
+    ensure_deploy_repo(ctx.config, prompter)
     plan = deploy_step.plan_deploy(
         ticket, ctx.tracker, ctx.host, ctx.config.repo, prompter, environments or []
     )
@@ -61,6 +63,18 @@ def deploy(
         prompter.info("\n[dry-run] Aucune MR créée.\n" + deploy_step.describe(plan))
         return
     deploy_step.execute(plan, ctx.tracker, ctx.host, ctx.config.jira, prompter)
+
+
+def ensure_deploy_repo(config: Config, prompter: Prompter) -> None:
+    """Le repo Kube ne se devine pas : demandé au premier déploiement, puis gardé."""
+    if any(repo.deploy.project for repo in config.repos.values()):
+        return
+    prompter.info("Premier déploiement : où sont les manifestes Kube (Helm, Kustomize, YAML) ?")
+    project = prompter.ask("Repo GitLab des manifestes Kube", "")
+    if not project:
+        raise Aborted("Repo Kube obligatoire pour déployer.")
+    config.repos.setdefault("default", RepoConfig()).deploy.project = project
+    config_module.save(config)
 
 
 def _token(store: TokenStore, name: str) -> str:

@@ -10,6 +10,7 @@ class Issue:
     key: str
     summary: str
     status: str
+    links: tuple[str, ...] = ()  # clés des tickets liés (ticket MEP…)
 
 
 @dataclass(frozen=True)

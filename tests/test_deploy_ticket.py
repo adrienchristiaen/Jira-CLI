@@ -7,8 +7,8 @@ from test_deploy import plan as plan_deploy
 from test_release import FINAL_REPO
 
 from jira_cli import deploy, release, session
-from jira_cli.config import Config, GitLabConfig, JiraConfig, RepoConfig
 from jira_cli.actions import Context
+from jira_cli.config import Config, GitLabConfig, JiraConfig, RepoConfig
 from jira_cli.models import Issue
 from jira_cli.stages import deploy_issue
 

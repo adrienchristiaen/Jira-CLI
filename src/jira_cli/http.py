@@ -60,7 +60,7 @@ def _summary(body: str) -> str:
             messages.append(data["message"])
         if messages:
             return "; ".join(map(str, messages))[:200]
-    if title := re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S):
+    if title := re.search(r"<title[^>]*>(.*?)</title>", body, re.IGNORECASE | re.DOTALL):
         return " ".join(title[1].split())[:200]
     if "<" in body[:100]:  # page HTML sans titre : rien de lisible
         return ""

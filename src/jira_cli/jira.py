@@ -10,7 +10,6 @@ import requests
 from .http import ApiError, check
 from .models import Board, Issue
 
-
 # Début du chemin des pages de Jira : ce qui précède est l'adresse de base (+ context path).
 _UI_PATHS = re.compile(r"/(secure|browse|projects|issues|plugins|rest|login\.jsp)(/|$)")
 
@@ -56,7 +55,7 @@ class JiraClient:
         return data.get("displayName") or data.get("name") or data.get("emailAddress", "")
 
     def search(self, jql: str, limit: int = 50) -> list[Issue]:
-        params = {"jql": jql, "fields": "summary,status", "maxResults": limit}
+        params = {"jql": jql, "fields": "summary,status,issuelinks", "maxResults": limit}
         response = self._session.get(f"{self._api}/search", params=params)
         if response.status_code in (404, 410):  # Jira Cloud : /search remplacé par /search/jql
             response = self._session.get(f"{self._api}/search/jql", params=params)
@@ -67,6 +66,34 @@ class JiraClient:
         params = {"jql": f'issue in linkedIssues("{key}")', "fields": "summary,status"}
         url = f"{self._agile}/board/{board}/issue"
         return [_issue(i) for i in check(self._session.get(url, params=params)).json()["issues"]]
+
+    def dev_links(self, key: str) -> list[str]:
+        """URL rattachées au ticket : liens web et panneau Développement (MR, commits).
+
+        Le panneau Développement est une API interne de Jira : absente, elle est ignorée.
+        """
+        links = [
+            link["object"]["url"]
+            for link in check(self._session.get(f"{self._api}/issue/{key}/remotelink")).json()
+        ]
+        try:
+            links += self._development_links(key)
+        except ApiError:
+            pass
+        return list(dict.fromkeys(links))
+
+    def _development_links(self, key: str) -> list[str]:
+        issue_id = check(self._session.get(f"{self._api}/issue/{key}", params={"fields": "id"}))
+        params = {"issueId": issue_id.json()["id"]}
+        dev = self._base + "/rest/dev-status/1.0/issue"
+        summary = check(self._session.get(f"{dev}/summary", params=params)).json()
+        kinds = summary["summary"].get("pullrequest", {}).get("byInstanceType", {})
+        links = []
+        for kind in kinds:
+            query = {**params, "applicationType": kind, "dataType": "pullrequest"}
+            detail = check(self._session.get(f"{dev}/detail", params=query)).json()["detail"]
+            links += [pr["url"] for item in detail for pr in item.get("pullRequests", [])]
+        return links
 
     def boards(self, projects: list[str]) -> list[Board]:
         """Boards des projets donnés (ceux des tickets de l'utilisateur), sans doublon."""
@@ -123,4 +150,8 @@ class JiraClient:
 
 def _issue(data: dict) -> Issue:
     fields = data["fields"]
-    return Issue(key=data["key"], summary=fields["summary"], status=fields["status"]["name"])
+    links = tuple(
+        (link.get("outwardIssue") or link.get("inwardIssue"))["key"]
+        for link in fields.get("issuelinks") or []
+    )
+    return Issue(data["key"], fields["summary"], fields["status"]["name"], links)

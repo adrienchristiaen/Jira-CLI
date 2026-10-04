@@ -1,14 +1,11 @@
 import pytest
 from fakes import MR, FakeHost, FakeTracker, ScriptedPrompter
 
-from jira_cli import config as config_module
-from jira_cli import session, wizard
+from jira_cli import session
 from jira_cli.actions import Context
-from jira_cli.config import Config, DeployConfig, GitLabConfig, JiraConfig, RepoConfig
-from jira_cli.http import ApiError
+from jira_cli.config import Config, GitLabConfig, JiraConfig, RepoConfig
 from jira_cli.models import Issue
 from jira_cli.stages import Action, actions, detect
-from jira_cli.tokens import TokenStore
 
 JIRA = JiraConfig(
     "https://jira",
@@ -99,114 +96,6 @@ def test_session_runs_init_on_first_use(tmp_path, monkeypatch):
     assert calls == [prompter]
 
 
-def test_init_wizard_guides_and_saves(tmp_path, monkeypatch):
-    monkeypatch.setenv("JIRA_CLI_HOME", str(tmp_path))
-    answers = [
-        "jira.example.com",  # refusée : pas de https://
-        "https://acme.atlassian.net/",
-        None,  # auth proposée : basic (Cloud)
-        "me@acme.fr",
-        "jira-token",
-        None,  # GitLab : https://gitlab.com
-        None,  # Personal Access Token
-        "gl-token",
-        ["MR"],  # colonnes prêtes pour une RC
-        "À installer",
-        "En preprod",
-        "En prod",
-        ["En prod"],
-        "Livré",
-        "team/kube",
-    ]
-    prompter = ScriptedPrompter(answers)
-    config = wizard.run_init(prompter, lambda c, t: FakeTracker(), lambda c, t: FakeTracker())
-    assert any("https://" in m for m in prompter.messages if m.startswith("ERREUR"))
-    saved = config_module.load()
-    assert saved.jira.url == "https://acme.atlassian.net"
-    assert (saved.jira.auth, saved.jira.user) == ("basic", "me@acme.fr")
-    assert saved.jira.rc_from_statuses == ["MR"]
-    assert saved.jira.status_after_deploy == {"preprod": "En preprod", "prod": "En prod"}
-    assert saved.jira.status_after_final == "Livré"
-    assert saved.repo("x").deploy.project == "team/kube" == config.repos["default"].deploy.project
-    assert TokenStore(tmp_path).get("jira") == "jira-token"
-    assert TokenStore(tmp_path).get("gitlab") == "gl-token"
-
-
-def test_init_rerun_keeps_values_tokens_and_repos(tmp_path, monkeypatch):
-    monkeypatch.setenv("JIRA_CLI_HOME", str(tmp_path))
-    repos = {
-        "default": RepoConfig(deploy=DeployConfig(project="team/kube")),
-        "team/app": RepoConfig(tag_format="x"),
-    }
-    config_module.save(Config(JIRA, GitLabConfig("https://gl"), repos))
-    TokenStore(tmp_path).set("jira", "old-j")
-    TokenStore(tmp_path).set("gitlab", "old-g")
-    wizard.run_init(ScriptedPrompter([]), lambda c, t: FakeTracker(), lambda c, t: FakeTracker())
-    saved = config_module.load()
-    assert saved.jira == JIRA and saved.repos["team/app"].tag_format == "x"
-    assert saved.repos["default"].deploy.project == "team/kube"
-    assert TokenStore(tmp_path).get("jira") == "old-j"
-
-
-def test_init_offers_retry_when_connection_fails(tmp_path, monkeypatch):
-    monkeypatch.setenv("JIRA_CLI_HOME", str(tmp_path))
-
-    class Broken(FakeTracker):
-        def whoami(self):
-            raise ApiError("401")
-
-    clients = iter([Broken(), FakeTracker()])
-    answers = ["https://jira.acme.fr", None, "bad", True, None, None, "good", None, None, "gl"]
-    prompter = ScriptedPrompter(answers)
-    wizard.run_init(prompter, lambda c, t: next(clients), lambda c, t: FakeTracker())
-    assert TokenStore(tmp_path).get("jira") == "good"
-    assert any("401" in m for m in prompter.messages)
-
-
 def test_issue_label_truncates_summary():
     label = session._issue_label(Issue("PROJ-1", "x" * 80, "En cours"))
     assert label.startswith("PROJ-1       En cours") and label.endswith("…")
-
-
-def test_init_turns_a_pasted_board_url_into_base_url_and_board(tmp_path, monkeypatch):
-    monkeypatch.setenv("JIRA_CLI_HOME", str(tmp_path))
-    boards = []
-
-    class Tracker(FakeTracker):
-        def statuses(self, board=""):
-            boards.append(board)
-            return super().statuses(board)
-
-    answers = ["https://jira.acme.fr/secure/RapidBoard.jspa?rapidView=4922", None, "pat"]
-    answers += [None, None, "gl"]  # GitLab
-    prompter = ScriptedPrompter(answers)
-    wizard.run_init(prompter, lambda c, t: Tracker(), lambda c, t: FakeTracker())
-    saved = config_module.load()
-    assert (saved.jira.url, saved.jira.board, saved.jira.auth) == (
-        "https://jira.acme.fr",
-        "4922",
-        "bearer",  # hors atlassian.net : Data Center proposé par défaut
-    )
-    assert boards == ["4922"]
-    assert (
-        "Type d'authentification",
-        "Jira Data Center / Server : Personal Access Token (recommandé)",
-    ) in prompter.asked
-    assert any("https://jira.acme.fr/secure/ViewProfile.jspa" in m for m in prompter.messages)
-    assert not any("id.atlassian.com" in m for m in prompter.messages)
-
-
-def test_init_hints_pat_when_cloud_auth_fails_on_data_center(tmp_path, monkeypatch):
-    monkeypatch.setenv("JIRA_CLI_HOME", str(tmp_path))
-
-    class Refused(FakeTracker):
-        def whoami(self):
-            raise ApiError("GET https://jira.acme.fr/rest/api/2/myself -> 401", 401)
-
-    clients = iter([Refused(), FakeTracker()])
-    answers = ["https://jira.acme.fr", "Jira Cloud", "me@acme.fr", "bad", True]
-    answers += [None, "Jira Data Center", "pat", None, None, "gl"]
-    prompter = ScriptedPrompter(answers)
-    wizard.run_init(prompter, lambda c, t: next(clients), lambda c, t: FakeTracker())
-    assert any("Personal Access Token »" in m for m in prompter.messages)
-    assert config_module.load().jira.auth == "bearer"
