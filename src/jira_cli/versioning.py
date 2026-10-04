@@ -55,6 +55,20 @@ def next_rc(
     return _bump(latest_final, bump), 1
 
 
+def latest_tag(
+    existing_tags: list[str], tag_format: str, rc_format: str, module: str | None
+) -> str | None:
+    """Tag le plus récent (version la plus haute ; une finale passe devant ses RC)."""
+    pattern = _tag_pattern(tag_format, rc_format, module)
+
+    def order(match: re.Match[str]):
+        version = (int(match["major"]), int(match["minor"]), int(match["patch"]))
+        return version, match["rc"] is None, int(match["rc"] or 0)
+
+    matches = [m for m in map(pattern.fullmatch, existing_tags) if m]
+    return max(matches, key=order).group(0) if matches else None
+
+
 def _tag_pattern(tag_format: str, rc_format: str, module: str | None) -> re.Pattern[str]:
     if not rc_format.startswith("{version}"):
         raise ValueError("rc_format doit commencer par {version}, par exemple {version}-rc.{n}")

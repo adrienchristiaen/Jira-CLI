@@ -3,7 +3,8 @@
 CLI Python déterministe qui fait avancer un ticket Jira dans ses étapes de livraison.
 Chaque action visible des autres (pipeline, transition Jira) est proposée puis confirmée.
 
-Première étape disponible : **release candidate** sur GitLab.
+Étapes disponibles sur GitLab : **release candidate** (`release`) puis **MR de déploiement**
+dans le repo Kube, une par environnement (`deploy`).
 
 ## Installation
 
@@ -31,6 +32,47 @@ jira-cli release PROJ-123             # lance après confirmation
 6. Lance une pipeline par module sur la branche de la MR, puis passe le ticket
    dans `jira.status_after_rc` si configuré.
 
+## Déploiement (MR Kube preprod / prod)
+
+```bash
+jira-cli deploy PROJ-123 --dry-run      # affiche les diffs des fichiers Kube, ne crée rien
+jira-cli deploy PROJ-123 --env preprod  # crée la MR preprod après confirmation
+```
+
+1. Retrouve la MR du ticket et les modules à déployer (comme `release`).
+2. Propose le tag à déployer par module : le plus récent (une finale passe devant ses RC).
+3. Compare les fichiers de conf de l'app avant / après la MR (`application*.conf|yml|yaml|properties`) :
+   clés ajoutées, modifiées, supprimées, topics signalés. Toute valeur qui lit une variable
+   d'environnement en MAJUSCULES (`${?KAFKA_TOPIC}` HOCON, `${KAFKA_TOPIC:defaut}` Spring) et qui
+   n'était pas lue avant est une variable à ajouter au déploiement : sa valeur est demandée par
+   environnement. Les variables qui ne sont plus lues sont signalées, jamais retirées.
+4. Pour chaque environnement, modifie le fichier du repo Kube en gardant son format
+   (commentaires, guillemets) : tag d'image + variables nouvelles. Affiche le diff.
+5. Après confirmation, une branche `deploy/PROJ-123-<env>` et une MR par environnement, puis la
+   transition Jira `jira.status_after_deploy.<env>` si configurée. Relancer ne recrée pas une MR
+   déjà ouverte et saute les fichiers déjà à jour.
+
+Le même mécanisme couvre Helm, Kustomize et YAML brut : un chemin YAML et la valeur à y écrire.
+
+```yaml
+repos:
+  default:
+    deploy:
+      project: team/kube-manifests        # repo Kube sur GitLab
+      branch: main
+      environments: [preprod, prod]
+      file: "apps/{module}/{env}/values.yaml"   # {module} {project} {env}
+      image_path: image.tag                     # Helm
+      image_value: "{version}"                  # {version} {tag}
+      env_path: env                             # mapping NOM: valeur ; vide = ne pas toucher
+```
+
+| Type | `image_path` | `image_value` | `env_path` |
+|---|---|---|---|
+| Helm values | `image.tag` | `{version}` | `env` |
+| Kustomize | `images[name={module}].newTag` | `{version}` | (patch séparé : vide) |
+| YAML brut | `spec.template.spec.containers[name={module}].image` | `registry/{module}:{version}` | `spec.template.spec.containers[name={module}].env` |
+
 ## Configuration
 
 ```yaml
@@ -40,6 +82,7 @@ jira:
   user: ""                  # pour basic uniquement
   rc_from_statuses: [MR]    # optionnel
   status_after_rc: À installer
+  status_after_deploy: {preprod: En preprod, prod: En prod}   # optionnel
 gitlab:
   url: https://gitlab.example.com
   auth: token               # token = PRIVATE-TOKEN | bearer = OAuth
@@ -86,7 +129,8 @@ Sans module détecté, un seul tag est posé pour le repo.
 ## Architecture
 
 Les étapes (`release.py`) ne dépendent que des interfaces de `ports.py` :
-`IssueTracker` (Jira), `CodeHost` (GitLab), `Prompter` (terminal).
+`IssueTracker` (Jira), `CodeHost` (GitLab), `Prompter` (terminal). `deploy.py` suit le même
+modèle, avec `appconfig.py` (diff de conf) et `manifests.py` (édition YAML du repo Kube).
 Ajouter GitHub = une nouvelle implémentation de `CodeHost`.
 
 ```bash

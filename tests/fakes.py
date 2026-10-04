@@ -39,6 +39,11 @@ class FakeHost:
     existing_tags: list[str] = field(default_factory=list)
     variables: list[PipelineVariable] = field(default_factory=list)
     triggered: list[tuple[int, str, dict]] = field(default_factory=list)
+    # Contenu propre à un ref : {(ref, chemin): texte}, prioritaire sur `files`.
+    files_at: dict[tuple[str, str], str] = field(default_factory=dict)
+    open_mrs: dict[str, str] = field(default_factory=dict)  # branche source -> URL
+    commits: list[tuple] = field(default_factory=list)
+    created_mrs: list[tuple] = field(default_factory=list)
 
     def find_merge_requests(self, ticket_key: str) -> list[MergeRequest]:
         return self.mrs
@@ -46,8 +51,8 @@ class FakeHost:
     def changed_paths(self, mr: MergeRequest) -> list[str]:
         return self.paths
 
-    def read_file(self, project_id: int, path: str, ref: str) -> str | None:
-        return self.files.get(path)
+    def read_file(self, project_id, path: str, ref: str) -> str | None:
+        return self.files_at.get((ref, path), self.files.get(path))
 
     def list_dirs(self, project_id: int, path: str, ref: str) -> list[str]:
         return self.dirs.get(path, [])
@@ -61,6 +66,19 @@ class FakeHost:
     def trigger_pipeline(self, project_id: int, ref: str, variables: dict[str, str]) -> str:
         self.triggered.append((project_id, ref, dict(variables)))
         return f"https://gitlab.example.com/pipelines/{len(self.triggered)}"
+
+    def merge_base(self, project_id: int, refs: list[str]) -> str:
+        return "base-sha"
+
+    def find_open_merge_request(self, project, source_branch: str) -> str | None:
+        return self.open_mrs.get(source_branch)
+
+    def commit_files(self, project, branch, start_branch, message, files) -> None:
+        self.commits.append((project, branch, start_branch, message, dict(files)))
+
+    def create_merge_request(self, project, source_branch, target_branch, title, description):
+        self.created_mrs.append((project, source_branch, target_branch, title, description))
+        return f"https://gitlab.example.com/kube/-/merge_requests/{len(self.created_mrs)}"
 
 
 class ScriptedPrompter:

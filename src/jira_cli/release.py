@@ -11,13 +11,9 @@ from __future__ import annotations
 
 from .config import JiraConfig, RepoConfig
 from .models import Issue, MergeRequest, ModuleRelease, ReleasePlan
-from .modules import detect_modules, touched_modules
 from .ports import CodeHost, IssueTracker, Prompter
+from .steps import Aborted, pick_merge_request, pick_modules
 from .versioning import format_tag, next_rc, tag_prefix
-
-
-class Aborted(Exception):
-    pass
 
 
 def plan_release(
@@ -38,11 +34,11 @@ def plan_release(
         ):
             raise Aborted("Ticket pas dans la bonne colonne.")
 
-    mr = _pick_merge_request(ticket_key, host, prompter)
+    mr = pick_merge_request(ticket_key, host, prompter)
     repo: RepoConfig = repo_config_for(mr.project_path)
     ref = mr.source_branch if repo.pipeline_ref == "source" else mr.target_branch
 
-    modules = _pick_modules(mr, repo, host, ref, prompter)
+    modules, _ = pick_modules(mr, repo, host, ref, prompter, "releaser")
     variables = host.pipeline_variables(mr.project_path, ref)
     releases = [
         _prepare_module(issue, mr, ref, module, repo, variables, host, prompter, bump)
@@ -75,45 +71,6 @@ def describe(plan: ReleasePlan) -> str:
         lines.append(f"- {release.tag}")
         lines.extend(f"    {key} = {value}" for key, value in release.variables.items())
     return "\n".join(lines)
-
-
-def _pick_merge_request(ticket_key: str, host: CodeHost, prompter: Prompter) -> MergeRequest:
-    mrs = host.find_merge_requests(ticket_key)
-    if not mrs:
-        raise Aborted(f"Aucune MR ouverte ne cite {ticket_key}.")
-    if len(mrs) == 1:
-        prompter.info(f"MR trouvée : {mrs[0].web_url}")
-        return mrs[0]
-    index = prompter.choose(
-        "Plusieurs MR citent ce ticket, laquelle ?", [f"{m.title} ({m.web_url})" for m in mrs]
-    )
-    return mrs[index]
-
-
-def _pick_modules(
-    mr: MergeRequest, repo: RepoConfig, host: CodeHost, ref: str, prompter: Prompter
-) -> list[str | None]:
-    modules = repo.modules or detect_modules(
-        lambda name: host.read_file(mr.project_id, name, ref),
-        lambda path: host.list_dirs(mr.project_id, path, ref),
-    )
-    if not modules:
-        prompter.info("Pas de modules détectés : un seul tag pour le repo.")
-        return [None]
-    touched, outside = touched_modules(host.changed_paths(mr), modules)
-    if outside:
-        prompter.info("Fichiers hors module : " + ", ".join(outside))
-    answer = prompter.ask(
-        f"Modules à releaser (séparés par des virgules, connus : {', '.join(sorted(modules))})",
-        ",".join(touched),
-    )
-    chosen = [name.strip() for name in answer.split(",") if name.strip()]
-    unknown = [name for name in chosen if name not in modules]
-    if unknown:
-        raise Aborted(f"Modules inconnus : {', '.join(unknown)}")
-    if not chosen:
-        raise Aborted("Aucun module choisi.")
-    return chosen
 
 
 def _prepare_module(

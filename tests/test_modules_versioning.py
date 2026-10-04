@@ -151,3 +151,13 @@ def test_unreadable_or_moduleless_build_file_falls_through_to_next_stack():
 def test_recursive_globs_are_skipped_not_guessed():
     package = '{"workspaces": ["packages/**"]}'
     assert detect_modules({"package.json": package}.get, dirs_of({"packages": ["a"]})) == {}
+
+
+def test_latest_tag_prefers_highest_version_and_final_over_its_rcs():
+    from jira_cli.versioning import latest_tag
+
+    fmt, rc = "{module}-v{version}", "{version}-rc.{n}"
+    tags = ["core-v1.2.0", "core-v1.3.0-rc.2", "core-v1.3.0-rc.10", "api-v9.0.0"]
+    assert latest_tag(tags, fmt, rc, "core") == "core-v1.3.0-rc.10"
+    assert latest_tag([*tags, "core-v1.3.0"], fmt, rc, "core") == "core-v1.3.0"
+    assert latest_tag([], fmt, rc, "core") is None

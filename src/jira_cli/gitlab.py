@@ -48,8 +48,8 @@ class GitLabClient:
                     paths.append(path)
         return paths
 
-    def read_file(self, project_id: int, path: str, ref: str) -> str | None:
-        url = f"{self._api}/projects/{project_id}/repository/files/{quote(path, safe='')}/raw"
+    def read_file(self, project_id: int | str, path: str, ref: str) -> str | None:
+        url = f"{self._project(project_id)}/repository/files/{quote(path, safe='')}/raw"
         response = self._session.get(url, params={"ref": ref})
         if response.status_code == 404:
             return None
@@ -96,6 +96,57 @@ class GitLabClient:
             self._session.post(f"{self._api}/projects/{project_id}/pipeline", json=body)
         ).json()
         return pipeline["web_url"]
+
+    def merge_base(self, project_id: int, refs: list[str]) -> str:
+        url = f"{self._project(project_id)}/repository/merge_base"
+        return check(self._session.get(url, params={"refs[]": refs})).json()["id"]
+
+    def find_open_merge_request(self, project: int | str, source_branch: str) -> str | None:
+        params = {"state": "opened", "source_branch": source_branch}
+        found = check(self._session.get(f"{self._project(project)}/merge_requests", params=params))
+        return next((mr["web_url"] for mr in found.json()), None)
+
+    def commit_files(
+        self,
+        project: int | str,
+        branch: str,
+        start_branch: str,
+        message: str,
+        files: dict[str, str],
+    ) -> None:
+        """Un commit sur `branch`, recréée depuis `start_branch` (relancer repart de zéro)."""
+        body = {
+            "branch": branch,
+            "start_branch": start_branch,
+            "force": True,
+            "commit_message": message,
+            "actions": [
+                {"action": "update", "file_path": path, "content": content}
+                for path, content in files.items()
+            ],
+        }
+        check(self._session.post(f"{self._project(project)}/repository/commits", json=body))
+
+    def create_merge_request(
+        self,
+        project: int | str,
+        source_branch: str,
+        target_branch: str,
+        title: str,
+        description: str,
+    ) -> str:
+        body = {
+            "source_branch": source_branch,
+            "target_branch": target_branch,
+            "title": title,
+            "description": description,
+            "remove_source_branch": True,
+        }
+        mr = check(self._session.post(f"{self._project(project)}/merge_requests", json=body))
+        return mr.json()["web_url"]
+
+    def _project(self, project: int | str) -> str:
+        return f"{self._api}/projects/{quote(str(project), safe='')}"
 
     def _paginate(self, path: str, params: dict) -> list[dict]:
         items: list[dict] = []

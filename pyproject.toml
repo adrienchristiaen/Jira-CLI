@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31",
     "PyYAML>=6.0",
+    "ruamel.yaml>=0.18",
     "cryptography>=41",
     "tomli>=2; python_version < '3.11'",
 ]

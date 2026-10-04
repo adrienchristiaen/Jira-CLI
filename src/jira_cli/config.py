@@ -6,7 +6,7 @@ Les tokens ne sont jamais dans ce fichier : voir secrets.TokenStore.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 import yaml
@@ -33,12 +33,41 @@ class JiraConfig:
     rc_from_statuses: list[str] = field(default_factory=list)
     # Statut visé après le lancement de la RC ; vide = pas de transition.
     status_after_rc: str = ""
+    # Statut visé après création de la MR de déploiement, par environnement ({prod: En prod}).
+    status_after_deploy: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class GitLabConfig:
     url: str
     auth: str = "token"
+
+
+@dataclass
+class DeployConfig:
+    """Où et comment déployer l'app dans le repo Kube (Helm, Kustomize ou YAML brut).
+
+    Gabarits : {module} (nom du repo s'il n'a pas de modules), {project} (nom du repo), {env},
+    et pour image_value : {version} {tag}.
+    """
+
+    project: str = ""  # repo Kube sur GitLab, ex. team/kube-manifests ; vide = pas de déploiement
+    branch: str = "main"
+    environments: list[str] = field(default_factory=lambda: ["preprod", "prod"])
+    file: str = "{project}/{env}/values.yaml"
+    image_path: str = "image.tag"  # kustomize : images[name=app].newTag
+    image_value: str = "{version}"  # manifeste brut : registry/app:{version}
+    # Où ajouter les variables d'environnement nouvelles ; vide = ne pas y toucher.
+    env_path: str = ""  # values Helm : env | manifeste : spec.template.spec.containers[0].env
+    # Fichiers de conf de l'app comparés dans la MR (motifs sur le nom de fichier).
+    config_files: list[str] = field(
+        default_factory=lambda: [
+            "application*.conf",
+            "application*.yml",
+            "application*.yaml",
+            "application*.properties",
+        ]
+    )
 
 
 @dataclass
@@ -55,6 +84,11 @@ class RepoConfig:
     variables: dict[str, str] = field(default_factory=dict)
     # {module: chemin} imposé ; remplace la détection automatique (stack non géré, découpage voulu).
     modules: dict[str, str] = field(default_factory=dict)
+    deploy: DeployConfig = field(default_factory=DeployConfig)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.deploy, dict):
+            self.deploy = _build(DeployConfig, self.deploy)
 
 
 @dataclass
@@ -85,9 +119,9 @@ def save(config: Config, path: Path | None = None) -> Path:
     path = path or home() / "config.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
-        "jira": vars(config.jira),
-        "gitlab": vars(config.gitlab),
-        "repos": {name: vars(repo) for name, repo in config.repos.items()},
+        "jira": asdict(config.jira),
+        "gitlab": asdict(config.gitlab),
+        "repos": {name: asdict(repo) for name, repo in config.repos.items()},
     }
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
     return path
