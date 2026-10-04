@@ -13,6 +13,12 @@ class Issue:
 
 
 @dataclass(frozen=True)
+class Board:
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
 class MergeRequest:
     project_id: int
     project_path: str

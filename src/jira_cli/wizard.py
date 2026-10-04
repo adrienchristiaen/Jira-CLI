@@ -6,6 +6,7 @@ des repos autres que le repo Kube par défaut.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 import requests
@@ -164,36 +165,122 @@ def _setup_gitlab(prompter, current: GitLabConfig | None, store: TokenStore, git
         current = gitlab
 
 
+# Noms de board qui parlent de mise en production (« MEP », « Preprod / Prod », « Déploiements »).
+_DEPLOY_BOARD = re.compile(
+    r"\b(pr[eé]-?)?prod(uction)?s?\b|d[eé]ploi|deploy|\bmep\b|livraison", re.I
+)
+# Valeurs proposées pour chaque colonne, d'après son nom ; l'utilisateur valide ou corrige.
+_RC_FROM = re.compile(r"revue|review|\bmr\b|merge", re.I)
+_AFTER_RC = re.compile(r"recett|qualif|install|test", re.I)
+_DONE = re.compile(r"livr|termin|done|ferm|fait", re.I)
+SAME_BOARD = "Le même board"
+
+
 def _setup_board(prompter, jira: JiraConfig, tracker, environments: list[str]) -> None:
+    _choose_boards(prompter, jira, tracker)
     prompter.explain(
         "Pour te proposer la bonne étape, dis-moi à quoi correspondent les colonnes de ton board."
     )
-    try:
-        statuses = tracker.statuses(jira.board)
-    except NETWORK_ERRORS:  # board illisible : tous les statuts, sinon saisie libre
-        try:
-            statuses = tracker.statuses()
-        except NETWORK_ERRORS:
-            statuses = []
+    dev = _board_statuses(tracker, jira.board)
+    deploy = _board_statuses(tracker, jira.deploy_board) if jira.deploy_board else dev
     jira.rc_from_statuses = _statuses(
-        prompter, "Colonnes où la MR est prête pour une RC", statuses, jira.rc_from_statuses
+        prompter,
+        "Colonnes où la MR est prête pour une RC",
+        dev,
+        jira.rc_from_statuses or _guess_all(dev, _RC_FROM),
     )
     jira.status_after_rc = _status(
-        prompter, "Colonne après lancement de la RC", statuses, jira.status_after_rc
+        prompter,
+        "Colonne après lancement de la RC",
+        dev,
+        jira.status_after_rc or _guess(dev, _AFTER_RC),
     )
     for env in environments:
         jira.status_after_deploy[env] = _status(
             prompter,
             f"Colonne après la MR de déploiement {env}",
-            statuses,
-            jira.status_after_deploy.get(env, ""),
+            deploy,
+            jira.status_after_deploy.get(env) or _guess_env(deploy, env),
         )
     jira.status_after_deploy = {env: s for env, s in jira.status_after_deploy.items() if s}
+    deployed = [
+        jira.status_after_deploy[env]
+        for env in environments[-1:]
+        if env in jira.status_after_deploy
+    ]
     jira.final_from_statuses = _statuses(
-        prompter, "Colonnes où la release finale peut partir", statuses, jira.final_from_statuses
+        prompter,
+        "Colonnes où la release finale peut partir",
+        deploy,
+        jira.final_from_statuses or deployed,
     )
     jira.status_after_final = _status(
-        prompter, "Colonne après la release finale", statuses, jira.status_after_final
+        prompter,
+        "Colonne après la release finale",
+        deploy,
+        jira.status_after_final or _guess(deploy[::-1], _DONE),
+    )
+
+
+def _choose_boards(prompter, jira: JiraConfig, tracker) -> None:
+    """Board de l'équipe et board des mises en prod, devinés d'après leur nom quand c'est sûr."""
+    try:
+        projects = list(dict.fromkeys(i.key.split("-")[0] for i in tracker.search(jira.jql)))
+        boards = tracker.boards(projects) if projects else []
+    except NETWORK_ERRORS:
+        boards = []
+    if not boards:
+        return
+    names = {board.id: board.name for board in boards}
+    deploy = [b for b in boards if _DEPLOY_BOARD.search(b.name)]
+    if jira.board not in names:
+        team = [b for b in boards if b not in deploy] or boards
+        jira.board = _one_board(prompter, "Board de ton équipe", team)
+    if jira.deploy_board not in names:
+        deploy = [b for b in deploy if b.id != jira.board]
+        others = deploy or [b for b in boards if b.id != jira.board]
+        if len(deploy) == 1:
+            jira.deploy_board = deploy[0].id
+        elif others:
+            question = "Board des mises en preprod/prod"
+            items = [SAME_BOARD, *(b.name for b in others)]
+            index = prompter.choose(question, items, 0)
+            jira.deploy_board = others[index - 1].id if index else ""
+    prompter.info(
+        f"Board de l'équipe : {names[jira.board]} · mises en prod : "
+        + names.get(jira.deploy_board, "le même")
+    )
+
+
+def _one_board(prompter, question: str, boards) -> str:
+    if len(boards) == 1:
+        return boards[0].id
+    return boards[prompter.choose(question, [b.name for b in boards], 0)].id
+
+
+def _board_statuses(tracker, board: str) -> list[str]:
+    for args in ((board,) if board else (), ()):  # board illisible : tous les statuts
+        try:
+            return tracker.statuses(*args)
+        except NETWORK_ERRORS:
+            continue
+    return []  # saisie libre
+
+
+def _guess(statuses: list[str], pattern: re.Pattern) -> str:
+    return next((name for name in statuses if pattern.search(name)), "")
+
+
+def _guess_all(statuses: list[str], pattern: re.Pattern) -> list[str]:
+    return [name for name in statuses if pattern.search(name)]
+
+
+def _guess_env(statuses: list[str], env: str) -> str:
+    """« En preprod » pour preprod, « En prod » (pas « En preprod ») pour prod."""
+    pattern = re.compile(rf"(?<![\w-]){re.escape(env)}\b", re.I)
+    matching = [name for name in statuses if pattern.search(name)]
+    return next((n for n in matching if re.match(r"(en|d[eé]ploy)", n, re.I)), "") or (
+        matching[0] if matching else ""
     )
 
 
