@@ -1,4 +1,4 @@
-"""Les commandes, partagées entre les sous-commandes et la session interactive."""
+"""Les commandes, partagées entre les sous-commandes et le dashboard."""
 
 from __future__ import annotations
 
@@ -12,8 +12,10 @@ from .gitlab import GitLabClient
 from .http import gitlab_session, jira_session
 from .jira import JiraClient
 from .ports import Prompter
+from .stages import Action
 from .steps import Aborted
 from .tokens import TokenStore
+from .versioning import BUMPS
 
 
 @dataclass
@@ -29,6 +31,19 @@ def connect() -> Context:
     tracker = JiraClient(config.jira.url, jira_session(config.jira, _token(store, "jira")))
     host = GitLabClient(config.gitlab.url, gitlab_session(config.gitlab, _token(store, "gitlab")))
     return Context(config, tracker, host)
+
+
+def run(
+    action: Action, ticket: str, ctx: Context, prompter: Prompter, dry_run: bool = False
+) -> None:
+    """Lance l'action choisie sur le ticket (plan affiché, puis confirmation)."""
+    if action.kind == "deploy":
+        deploy(ticket, ctx, prompter, [action.env], dry_run)
+        return
+    bump = "patch"
+    if action.kind == "release":
+        bump = prompter.ask("Incrément si aucune RC n'est en cours", "patch", BUMPS)
+    release(ticket, ctx, prompter, bump, action.kind == "final", dry_run)
 
 
 def release(

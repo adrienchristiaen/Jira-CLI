@@ -76,6 +76,7 @@ class FakeHost:
     # Contenu propre à un ref : {(ref, chemin): texte}, prioritaire sur `files`.
     files_at: dict[tuple[str, str], str] = field(default_factory=dict)
     mergeable: str = "mergeable"
+    pipeline: str = "success"
     merged: list[int] = field(default_factory=list)
     open_mrs: dict[str, str] = field(default_factory=dict)  # branche source -> URL
     commits: list[tuple] = field(default_factory=list)
@@ -86,6 +87,9 @@ class FakeHost:
 
     def merge_status(self, mr: MergeRequest) -> str:
         return self.mergeable
+
+    def pipeline_status(self, mr: MergeRequest) -> str:
+        return self.pipeline
 
     def merge(self, mr: MergeRequest) -> None:
         self.merged.append(mr.iid)

@@ -1,14 +1,12 @@
 """Mises en prod suivies par un ticket séparé (ticket MEP lié, sur le board des mises en prod)."""
 
-import pytest
-from fakes import FakeHost, FakeTracker, ScriptedPrompter
+from fakes import FakeTracker, ScriptedPrompter
 from test_deploy import make_host
 from test_deploy import plan as plan_deploy
 from test_release import FINAL_REPO
 
-from jira_cli import deploy, release, session
-from jira_cli.actions import Context
-from jira_cli.config import Config, GitLabConfig, JiraConfig, RepoConfig
+from jira_cli import deploy, release
+from jira_cli.config import JiraConfig
 from jira_cli.models import Issue
 from jira_cli.stages import deploy_issue
 
@@ -77,19 +75,3 @@ def test_rc_still_moves_the_team_ticket():
     )
     release.execute(plan, tracker, host, JIRA, ScriptedPrompter([True]))
     assert tracker.transitions == [("PROJ-123", "A Recetter")]
-
-
-@pytest.mark.parametrize(
-    "mep_status, expected",
-    [("A installer preprod", "Déploiement preprod"), ("En preprod", "Déploiement prod")],
-)
-def test_session_recommends_from_the_mep_ticket(mep_status, expected):
-    tracker = FakeTracker(
-        issue=Issue("PROJ-123", "Paiements", "A Recetter"),
-        linked=[Issue("MEP-9", "MEP", mep_status)],
-    )
-    repos = {"default": RepoConfig()}
-    ctx = Context(Config(JIRA, GitLabConfig("https://gl"), repos), tracker, FakeHost())
-    prompter = ScriptedPrompter(["✕"])
-    session._ticket(prompter, ctx, "PROJ-123", dry_run=True)
-    assert any(f"Étape suivante proposée : {expected}" in m for m in prompter.messages)
