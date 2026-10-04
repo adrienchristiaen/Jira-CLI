@@ -10,8 +10,23 @@ repo Kube, une par environnement (`deploy`), puis **release finale** (`release -
 
 ```bash
 pip install -e '.[dev]'
-jira-cli init        # URLs, modes d'authentification, tokens (chiffrés en local)
+jira-cli             # session guidée (lance la configuration au premier usage)
 ```
+
+## Session guidée
+
+`jira-cli` sans argument ouvre une session dans le terminal, avec des menus aux flèches :
+
+1. Au premier lancement, la configuration (`jira-cli init`) : URL Jira avec exemples, type
+   d'authentification au menu, lien pour créer le token, test de connexion, puis les colonnes de
+   ton board qui correspondent à chaque étape (liste lue dans Jira). Relancer l'init repart des
+   valeurs actuelles.
+2. Tes tickets (`jira.jql`, par défaut ceux qui te sont assignés et pas terminés), avec leur colonne.
+3. Pour le ticket choisi : l'étape détectée depuis sa colonne et l'action suivante en tête de menu
+   (RC → déploiement preprod → prod → release finale). Chaque action affiche son plan et demande
+   confirmation avant de lancer quoi que ce soit. `jira-cli --dry-run` n'affiche que les plans.
+
+Les sous-commandes ci-dessous restent disponibles pour les scripts.
 
 La config est dans `~/.config/jira-cli/` (ou `$JIRA_CLI_HOME`) :
 `config.yaml` en clair, `tokens.enc` chiffré, `key` en 0600 (ou la clé dans `$JIRA_CLI_KEY`).
@@ -94,6 +109,7 @@ jira:
   url: https://jira.example.com
   auth: bearer              # bearer = PAT (Data Center) | basic = email + API token (Cloud)
   user: ""                  # pour basic uniquement
+  jql: "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
   rc_from_statuses: [MR]    # optionnel
   status_after_rc: À installer
   status_after_deploy: {preprod: En preprod, prod: En prod}   # optionnel

@@ -22,12 +22,24 @@ MR = MergeRequest(
 class FakeTracker:
     issue: Issue = field(default_factory=lambda: Issue("PROJ-123", "Ajout du topic payments", "MR"))
     transitions: list[tuple[str, str]] = field(default_factory=list)
+    searches: list[str] = field(default_factory=list)
 
     def get_issue(self, key: str) -> Issue:
         return self.issue
 
     def transition(self, key: str, status: str) -> None:
         self.transitions.append((key, status))
+        self.issue = Issue(self.issue.key, self.issue.summary, status)
+
+    def search(self, jql: str, limit: int = 50) -> list[Issue]:
+        self.searches.append(jql)
+        return [self.issue]
+
+    def whoami(self) -> str:
+        return "Adrien"
+
+    def statuses(self) -> list[str]:
+        return ["MR", "À installer", "En preprod", "En prod", "Validé prod", "Livré"]
 
 
 @dataclass
@@ -109,9 +121,32 @@ class ScriptedPrompter:
         answer = self._next()
         return default if answer is None else str(answer)
 
-    def choose(self, question: str, items: Sequence[str]) -> int:
+    def choose(self, question: str, items: Sequence[str], default: int = 0) -> int:
+        self.asked.append((question, items[default]))
         answer = self._next()
-        return 0 if answer is None else int(answer)
+        if isinstance(answer, str):  # choix par libellé (début), plus lisible dans les tests
+            return next(i for i, item in enumerate(items) if item.startswith(answer))
+        return default if answer is None else int(answer)
+
+    def choose_many(self, question: str, items: Sequence[str], checked=()) -> list[int]:
+        answer = self._next()
+        return list(checked) if answer is None else [items.index(name) for name in answer]
+
+    def secret(self, question: str) -> str:
+        answer = self._next()
+        return "" if answer is None else str(answer)
+
+    def title(self, text: str, subtitle: str = "") -> None:
+        self.messages.append(f"{text} | {subtitle}")
+
+    def explain(self, text: str) -> None:
+        self.messages.append(text)
+
+    def success(self, text: str) -> None:
+        self.messages.append("OK " + text)
+
+    def error(self, text: str) -> None:
+        self.messages.append("ERREUR " + text)
 
     def _next(self):
         return self.answers.pop(0) if self.answers else None

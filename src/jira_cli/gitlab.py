@@ -27,6 +27,9 @@ class GitLabClient:
         self._session = session
         self._sleep = sleep
 
+    def whoami(self) -> str:
+        return check(self._session.get(f"{self._api}/user")).json()["username"]
+
     def find_merge_requests(
         self, ticket_key: str, include_merged: bool = False
     ) -> list[MergeRequest]:
