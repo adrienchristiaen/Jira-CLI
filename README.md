@@ -20,8 +20,12 @@ jira-cli             # session guidée (lance la configuration au premier usage)
 1. Au premier lancement, la configuration (`jira-cli init`) : URL Jira avec exemples (l'URL du
    board marche aussi : l'adresse de base et le numéro du board en sont déduits), type
    d'authentification au menu (Cloud si l'adresse est en atlassian.net, sinon Data Center avec un
-   Personal Access Token), lien pour créer le token, test de connexion, puis les colonnes de
-   ton board qui correspondent à chaque étape (statuts du board, lus dans Jira). Relancer l'init repart des
+   Personal Access Token), lien pour créer le token, test de connexion, puis tes boards : ceux des
+   projets de tes tickets, le board de l'équipe et celui des mises en prod devinés d'après leur
+   nom (une question courte si c'est ambigu). Les colonnes de chaque étape sont proposées depuis
+   le bon board, avec une valeur devinée d'après leur nom (entrée = valider).
+   Avec un board des mises en prod, les déploiements et la release finale font avancer le ticket
+   de mise en prod lié à ton ticket (lien Jira) qui se trouve sur ce board, pas ton ticket. Relancer l'init repart des
    valeurs actuelles.
 2. Tes tickets (`jira.jql`, par défaut ceux qui te sont assignés et pas terminés), avec leur colonne.
 3. Pour le ticket choisi : l'étape détectée depuis sa colonne et l'action suivante en tête de menu

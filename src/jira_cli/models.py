@@ -13,6 +13,12 @@ class Issue:
 
 
 @dataclass(frozen=True)
+class Board:
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
 class MergeRequest:
     project_id: int
     project_path: str
@@ -51,3 +57,4 @@ class ReleasePlan:
     ref: str
     releases: list[ModuleRelease]
     final: bool = False  # release finale : merge de la MR (si ouverte) puis tag sur la cible
+    tracked: Issue | None = None  # ticket dont la colonne avance ; en finale, le ticket MEP

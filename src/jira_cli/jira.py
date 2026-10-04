@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 import requests
 
 from .http import ApiError, check
-from .models import Issue
+from .models import Board, Issue
 
 
 # Début du chemin des pages de Jira : ce qui précède est l'adresse de base (+ context path).
@@ -42,14 +42,14 @@ class JiraClient:
     def __init__(self, base_url: str, session: requests.Session) -> None:
         self._base = base_url.rstrip("/")
         self._api = self._base + "/rest/api/2"
+        self._agile = self._base + "/rest/agile/1.0"
         self._session = session
 
     def get_issue(self, key: str) -> Issue:
         data = check(
             self._session.get(f"{self._api}/issue/{key}", params={"fields": "summary,status"})
         ).json()
-        fields = data["fields"]
-        return Issue(key=data["key"], summary=fields["summary"], status=fields["status"]["name"])
+        return _issue(data)
 
     def whoami(self) -> str:
         data = check(self._session.get(f"{self._api}/myself")).json()
@@ -60,29 +60,46 @@ class JiraClient:
         response = self._session.get(f"{self._api}/search", params=params)
         if response.status_code in (404, 410):  # Jira Cloud : /search remplacé par /search/jql
             response = self._session.get(f"{self._api}/search/jql", params=params)
-        return [
-            Issue(
-                key=i["key"], summary=i["fields"]["summary"], status=i["fields"]["status"]["name"]
-            )
-            for i in check(response).json()["issues"]
-        ]
+        return [_issue(i) for i in check(response).json()["issues"]]
+
+    def linked_issues(self, key: str, board: str) -> list[Issue]:
+        """Tickets liés à `key` qui sont sur ce board (ex. le ticket de mise en prod)."""
+        params = {"jql": f'issue in linkedIssues("{key}")', "fields": "summary,status"}
+        url = f"{self._agile}/board/{board}/issue"
+        return [_issue(i) for i in check(self._session.get(url, params=params)).json()["issues"]]
+
+    def boards(self, projects: list[str]) -> list[Board]:
+        """Boards des projets donnés (ceux des tickets de l'utilisateur), sans doublon."""
+        found: dict[str, Board] = {}
+        for project in projects:
+            start = 0
+            while True:
+                params = {"projectKeyOrId": project, "startAt": start, "maxResults": 50}
+                page = check(self._session.get(f"{self._agile}/board", params=params)).json()
+                for board in page["values"]:
+                    found.setdefault(str(board["id"]), Board(str(board["id"]), board["name"]))
+                start += len(page["values"])
+                if page.get("isLast", True) or not page["values"]:
+                    break
+        return list(found.values())
 
     def statuses(self, board: str = "") -> list[str]:
         """Noms des statuts, pour proposer les colonnes du board à l'init.
 
-        Avec un board : seulement les statuts de ses colonnes ; sinon tous ceux de l'instance.
+        Avec un board : ceux de ses colonnes, dans leur ordre ; sinon tous ceux de l'instance.
         """
-        wanted = None
-        if board:
-            url = f"{self._base}/rest/agile/1.0/board/{board}/configuration"
-            columns = check(self._session.get(url)).json()["columnConfig"]["columns"]
-            wanted = {status["id"] for column in columns for status in column["statuses"]}
         names = {
-            status["name"]
+            status["id"]: status["name"]
             for status in check(self._session.get(f"{self._api}/status")).json()
-            if wanted is None or status["id"] in wanted
         }
-        return sorted(names, key=str.casefold)
+        if not board:
+            return sorted(set(names.values()), key=str.casefold)
+        url = f"{self._agile}/board/{board}/configuration"
+        columns = check(self._session.get(url)).json()["columnConfig"]["columns"]
+        ordered = [
+            names[s["id"]] for column in columns for s in column["statuses"] if s["id"] in names
+        ]
+        return list(dict.fromkeys(ordered))
 
     def transition(self, key: str, status: str) -> None:
         url = f"{self._api}/issue/{key}/transitions"
@@ -102,3 +119,8 @@ class JiraClient:
                 f"Transition vers « {status} » impossible pour {key}. Disponibles : {available}"
             )
         check(self._session.post(url, json={"transition": {"id": match["id"]}}))
+
+
+def _issue(data: dict) -> Issue:
+    fields = data["fields"]
+    return Issue(key=data["key"], summary=fields["summary"], status=fields["status"]["name"])

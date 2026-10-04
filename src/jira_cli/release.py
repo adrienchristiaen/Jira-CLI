@@ -14,6 +14,7 @@ from __future__ import annotations
 from .config import JiraConfig, RepoConfig
 from .models import Issue, MergeRequest, ModuleRelease, ReleasePlan
 from .ports import CodeHost, IssueTracker, Prompter
+from .stages import deploy_issue
 from .steps import Aborted, pick_merge_request, pick_modules
 from .versioning import format_final_tag, format_tag, next_final, next_rc, tag_prefix
 
@@ -30,8 +31,13 @@ def plan_release(
 ) -> ReleasePlan:
     issue = tracker.get_issue(ticket_key)
     prompter.info(f"{issue.key} · {issue.summary} · statut : {issue.status}")
+    tracked = deploy_issue(tracker, jira, issue, prompter) if final else issue
+    if tracked is None:
+        prompter.info(f"Aucun ticket lié à {issue.key} sur le board des mises en prod.")
+    elif tracked != issue:
+        prompter.info(f"Ticket de mise en prod : {tracked.key} · statut : {tracked.status}")
     statuses = jira.final_from_statuses if final else jira.rc_from_statuses
-    if statuses and issue.status not in statuses:
+    if statuses and tracked and tracked.status not in statuses:
         expected = ", ".join(statuses)
         if not prompter.confirm(
             f"Le ticket n'est pas dans {expected}. Continuer quand même ?", False
@@ -55,7 +61,9 @@ def plan_release(
         _prepare_module(issue, mr, module, repo, variables, host, prompter, bump, final)
         for module in modules
     ]
-    return ReleasePlan(issue=issue, merge_request=mr, ref=ref, releases=releases, final=final)
+    return ReleasePlan(
+        issue=issue, merge_request=mr, ref=ref, releases=releases, final=final, tracked=tracked
+    )
 
 
 def execute(
@@ -76,9 +84,9 @@ def execute(
         prompter.info(f"Pipeline lancée pour {release.tag} : {url}")
         urls.append(url)
     status = jira.status_after_final if plan.final else jira.status_after_rc
-    if status:
-        tracker.transition(plan.issue.key, status)
-        prompter.info(f"{plan.issue.key} passé en « {status} ».")
+    if status and plan.tracked:
+        tracker.transition(plan.tracked.key, status)
+        prompter.info(f"{plan.tracked.key} passé en « {status} ».")
     return urls
 
 

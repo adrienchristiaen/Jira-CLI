@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from jira_cli.models import Issue, MergeRequest, PipelineVariable
+from jira_cli.models import Board, Issue, MergeRequest, PipelineVariable
 
 MR = MergeRequest(
     project_id=42,
@@ -23,6 +23,11 @@ class FakeTracker:
     issue: Issue = field(default_factory=lambda: Issue("PROJ-123", "Ajout du topic payments", "MR"))
     transitions: list[tuple[str, str]] = field(default_factory=list)
     searches: list[str] = field(default_factory=list)
+    all_boards: list[Board] = field(default_factory=list)
+    board_statuses: dict[str, list[str]] = field(default_factory=dict)
+    board_projects: list[list[str]] = field(default_factory=list)
+    linked: list[Issue] = field(default_factory=list)  # tickets liés, sur le board demandé
+    linked_boards: list[str] = field(default_factory=list)
 
     def get_issue(self, key: str) -> Issue:
         return self.issue
@@ -38,7 +43,17 @@ class FakeTracker:
     def whoami(self) -> str:
         return "Adrien"
 
+    def linked_issues(self, key: str, board: str) -> list[Issue]:
+        self.linked_boards.append(board)
+        return self.linked
+
+    def boards(self, projects: list[str]) -> list[Board]:
+        self.board_projects.append(projects)
+        return self.all_boards
+
     def statuses(self, board: str = "") -> list[str]:
+        if board in self.board_statuses:
+            return self.board_statuses[board]
         return ["MR", "À installer", "En preprod", "En prod", "Validé prod", "Livré"]
 
 
