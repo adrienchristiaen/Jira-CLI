@@ -26,6 +26,8 @@ class FakeTracker:
     all_boards: list[Board] = field(default_factory=list)
     board_statuses: dict[str, list[str]] = field(default_factory=dict)
     board_projects: list[list[str]] = field(default_factory=list)
+    linked: list[Issue] = field(default_factory=list)  # tickets liés, sur le board demandé
+    linked_boards: list[str] = field(default_factory=list)
 
     def get_issue(self, key: str) -> Issue:
         return self.issue
@@ -40,6 +42,10 @@ class FakeTracker:
 
     def whoami(self) -> str:
         return "Adrien"
+
+    def linked_issues(self, key: str, board: str) -> list[Issue]:
+        self.linked_boards.append(board)
+        return self.linked
 
     def boards(self, projects: list[str]) -> list[Board]:
         self.board_projects.append(projects)

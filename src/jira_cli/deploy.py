@@ -23,6 +23,7 @@ from .config import DeployConfig, JiraConfig, RepoConfig
 from .models import Issue, MergeRequest
 from .modules import touched_modules
 from .ports import CodeHost, IssueTracker, Prompter
+from .stages import deploy_issue
 from .steps import Aborted, pick_merge_request, pick_modules
 from .versioning import latest_tag, tag_prefix
 
@@ -104,6 +105,7 @@ def execute(
         return []
     if not prompter.confirm(f"Créer {len(todo)} MR dans {plan.deploy.project} ?", False):
         raise Aborted("Annulé par l'utilisateur.")
+    tracked = _tracked(plan, tracker, jira, prompter)
     urls = []
     for env in todo:
         title = f"{plan.issue.key} Déploiement {env.env} : {_tags(plan)}"
@@ -120,10 +122,22 @@ def execute(
         prompter.info(f"MR {env.env} : {url}")
         urls.append(url)
         status = jira.status_after_deploy.get(env.env)
-        if status:
-            tracker.transition(plan.issue.key, status)
-            prompter.info(f"{plan.issue.key} passé en « {status} ».")
+        if status and tracked:
+            tracker.transition(tracked.key, status)
+            prompter.info(f"{tracked.key} passé en « {status} ».")
     return urls
+
+
+def _tracked(plan: DeployPlan, tracker: IssueTracker, jira: JiraConfig, prompter: Prompter):
+    if not jira.status_after_deploy:
+        return None
+    tracked = deploy_issue(tracker, jira, plan.issue, prompter)
+    if tracked is None:
+        prompter.info(
+            f"Aucun ticket lié à {plan.issue.key} sur le board des mises en prod : "
+            "colonne inchangée."
+        )
+    return tracked
 
 
 def describe(plan: DeployPlan) -> str:

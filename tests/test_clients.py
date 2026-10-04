@@ -4,7 +4,7 @@ from jira_cli.config import Config, GitLabConfig, JiraConfig, RepoConfig, load, 
 from jira_cli.gitlab import GitLabClient
 from jira_cli.http import ApiError, check, gitlab_session, jira_session
 from jira_cli.jira import JiraClient, parse_url
-from jira_cli.models import Board
+from jira_cli.models import Board, Issue
 from jira_cli.tokens import TokenStore
 
 
@@ -355,3 +355,11 @@ def test_boards_of_projects_are_paginated_and_deduplicated():
 
     client = JiraClient("https://jira", FakeSession({"/rest/agile/1.0/board": board}))
     assert client.boards(["PROJ", "OPS"]) == [Board("1", "Squad"), Board("2", "MEP")]
+
+
+def test_linked_issues_are_searched_on_the_board():
+    issue = {"key": "MEP-9", "fields": {"summary": "MEP", "status": {"name": "En preprod"}}}
+    session = FakeSession({"/rest/agile/1.0/board/77/issue": FakeResponse({"issues": [issue]})})
+    client = JiraClient("https://jira", session)
+    assert client.linked_issues("PROJ-123", "77") == [Issue("MEP-9", "MEP", "En preprod")]
+    assert session.calls[0][2]["params"]["jql"] == 'issue in linkedIssues("PROJ-123")'

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import JiraConfig
+from .models import Issue
 
 
 @dataclass(frozen=True)
@@ -59,3 +60,15 @@ def actions(stage: Stage, environments: list[str]) -> list[Action]:
         every.remove(stage.next)
         every.insert(0, stage.next)
     return every
+
+
+def deploy_issue(tracker, jira: JiraConfig, issue: Issue, prompter) -> Issue | None:
+    """Ticket qui suit la mise en prod : le ticket lui-même, ou, avec un board des mises en prod,
+    le ticket lié qui s'y trouve (None si aucun)."""
+    if not jira.deploy_board:
+        return issue
+    linked = tracker.linked_issues(issue.key, jira.deploy_board)
+    if len(linked) <= 1:
+        return linked[0] if linked else None
+    labels = [f"{i.key} · {i.summary} · {i.status}" for i in linked]
+    return linked[prompter.choose(f"Ticket de mise en prod de {issue.key}", labels)]

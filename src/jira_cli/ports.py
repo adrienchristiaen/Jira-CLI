@@ -19,6 +19,8 @@ class IssueTracker(Protocol):
 
     def search(self, jql: str, limit: int = 50) -> list[Issue]: ...
 
+    def linked_issues(self, key: str, board: str) -> list[Issue]: ...
+
 
 # Projet GitLab : son id numérique ou son chemin complet (ex. team/kube-manifests).
 ProjectRef = int | str

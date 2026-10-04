@@ -23,7 +23,9 @@ jira-cli             # session guidée (lance la configuration au premier usage)
    Personal Access Token), lien pour créer le token, test de connexion, puis tes boards : ceux des
    projets de tes tickets, le board de l'équipe et celui des mises en prod devinés d'après leur
    nom (une question courte si c'est ambigu). Les colonnes de chaque étape sont proposées depuis
-   le bon board, avec une valeur devinée d'après leur nom (entrée = valider). Relancer l'init repart des
+   le bon board, avec une valeur devinée d'après leur nom (entrée = valider).
+   Avec un board des mises en prod, les déploiements et la release finale font avancer le ticket
+   de mise en prod lié à ton ticket (lien Jira) qui se trouve sur ce board, pas ton ticket. Relancer l'init repart des
    valeurs actuelles.
 2. Tes tickets (`jira.jql`, par défaut ceux qui te sont assignés et pas terminés), avec leur colonne.
 3. Pour le ticket choisi : l'étape détectée depuis sa colonne et l'action suivante en tête de menu

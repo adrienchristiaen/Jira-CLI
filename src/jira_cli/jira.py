@@ -49,8 +49,7 @@ class JiraClient:
         data = check(
             self._session.get(f"{self._api}/issue/{key}", params={"fields": "summary,status"})
         ).json()
-        fields = data["fields"]
-        return Issue(key=data["key"], summary=fields["summary"], status=fields["status"]["name"])
+        return _issue(data)
 
     def whoami(self) -> str:
         data = check(self._session.get(f"{self._api}/myself")).json()
@@ -61,12 +60,13 @@ class JiraClient:
         response = self._session.get(f"{self._api}/search", params=params)
         if response.status_code in (404, 410):  # Jira Cloud : /search remplacé par /search/jql
             response = self._session.get(f"{self._api}/search/jql", params=params)
-        return [
-            Issue(
-                key=i["key"], summary=i["fields"]["summary"], status=i["fields"]["status"]["name"]
-            )
-            for i in check(response).json()["issues"]
-        ]
+        return [_issue(i) for i in check(response).json()["issues"]]
+
+    def linked_issues(self, key: str, board: str) -> list[Issue]:
+        """Tickets liés à `key` qui sont sur ce board (ex. le ticket de mise en prod)."""
+        params = {"jql": f'issue in linkedIssues("{key}")', "fields": "summary,status"}
+        url = f"{self._agile}/board/{board}/issue"
+        return [_issue(i) for i in check(self._session.get(url, params=params)).json()["issues"]]
 
     def boards(self, projects: list[str]) -> list[Board]:
         """Boards des projets donnés (ceux des tickets de l'utilisateur), sans doublon."""
@@ -119,3 +119,8 @@ class JiraClient:
                 f"Transition vers « {status} » impossible pour {key}. Disponibles : {available}"
             )
         check(self._session.post(url, json={"transition": {"id": match["id"]}}))
+
+
+def _issue(data: dict) -> Issue:
+    fields = data["fields"]
+    return Issue(key=data["key"], summary=fields["summary"], status=fields["status"]["name"])

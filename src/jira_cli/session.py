@@ -11,7 +11,7 @@ from . import actions, wizard
 from . import config as config_module
 from .http import ApiError
 from .models import Issue
-from .stages import Action, detect
+from .stages import Action, Stage, deploy_issue, detect
 from .stages import actions as all_actions
 from .steps import Aborted
 from .versioning import BUMPS
@@ -80,7 +80,7 @@ def _ticket(prompter, ctx: actions.Context, key: str, dry_run: bool) -> bool:
         except ApiError as error:
             prompter.error(str(error))
             return True
-        stage = detect(issue.status, ctx.config.jira, environments)
+        stage = _stage(prompter, ctx, issue, environments)
         prompter.title(
             f"{issue.key} · {issue.summary}", f"Colonne : {issue.status} · {stage.description}"
         )
@@ -100,6 +100,25 @@ def _ticket(prompter, ctx: actions.Context, key: str, dry_run: bool) -> bool:
             prompter.error(str(error))
         except KeyboardInterrupt:
             prompter.error("Interrompu, rien de plus n'a été lancé.")
+
+
+def _stage(prompter, ctx: actions.Context, issue: Issue, environments: list[str]) -> Stage:
+    """Étape du ticket ; avec un ticket MEP séparé, sa colonne prime dès qu'elle est reconnue."""
+    jira = ctx.config.jira
+    stage = detect(issue.status, jira, environments)
+    if not jira.deploy_board:
+        return stage
+    try:
+        mep = deploy_issue(ctx.tracker, jira, issue, prompter)
+    except ApiError as error:
+        prompter.error(f"Ticket de mise en prod introuvable : {error}")
+        return stage
+    if mep is None:
+        return stage
+    mep_stage = detect(mep.status, jira, environments)
+    if not mep_stage.next:
+        return stage
+    return Stage(f"{mep.key} ({mep.status}) : {mep_stage.description}", mep_stage.next)
 
 
 def _run(prompter, ctx: actions.Context, issue: Issue, action: Action, dry_run: bool) -> None:
