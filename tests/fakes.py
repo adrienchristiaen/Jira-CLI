@@ -34,6 +34,10 @@ class FakeTracker:
     # Vie des tickets terminés, par board : History, ou juste la liste des colonnes traversées.
     histories: dict[str, list] = field(default_factory=dict)
     history_boards: list[str] = field(default_factory=list)
+    cloud: bool = False
+
+    def is_cloud(self) -> bool:
+        return self.cloud
 
     def get_issue(self, key: str) -> Issue:
         return self.issue

@@ -1,51 +1,20 @@
-"""Ce qui se déduit de Jira sans rien demander : rôle des boards, colonnes de chaque étape,
-adresse du GitLab. Fonctions pures : l'init s'en sert, puis ne pose que les questions ambiguës.
+"""Ce qui se déduit des faits sans rien demander : colonnes utilisées, intention et rôle de
+chaque colonne, adresses. Jamais d'après un nom : aucun mot-clé dans ce module. Fonctions
+pures : l'init s'en sert, puis ne pose que les questions ambiguës.
 """
 
 from __future__ import annotations
 
-import re
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from datetime import datetime
 from urllib.parse import urlsplit
 
 from .config import JiraConfig
 from .models import Board, CodeEvent, History, Issue, Stay
 
-# Noms de board qui parlent de mise en production (« MEP », « Preprod / Prod », « Déploiements »).
-_DEPLOY_BOARD = re.compile(
-    r"\b(pr[eé]-?)?prod(uction)?s?\b|d[eé]ploi|deploy|\bmep\b|livraison", re.IGNORECASE
-)
-# Colonnes, d'après leur nom.
-_REVIEW = re.compile(r"revue|review|\bmr\b|merge", re.IGNORECASE)
-_AFTER_RC = re.compile(r"recett|qualif|install|test", re.IGNORECASE)
-_DONE = re.compile(r"livr|termin|done|ferm|fait", re.IGNORECASE)
-# Liens qui pointent vers un GitLab : MR, commit, branche, ou un hôte qui s'appelle gitlab.
-_GITLAB_PATH = re.compile(r"/-/(merge_requests|commit|tree|pipelines)/")
-
-
-def board_role(name: str, columns: list[str], environments: list[str]) -> str:
-    """« deploy » pour un board de mises en prod, sinon « team ».
-
-    Le nom suffit s'il parle de prod ; sinon, un board sans colonne de revue mais avec des
-    colonnes d'environnement (« En preprod ») est un board de mises en prod.
-    """
-    if _DEPLOY_BOARD.search(name):
-        return "deploy"
-    has_env = any(_env_pattern(env).search(c) for env in environments for c in columns)
-    has_review = any(_REVIEW.search(c) for c in columns)
-    return "deploy" if has_env and not has_review else "team"
-
-
-def split_boards(
-    boards: list[Board], columns: Callable[[str], list[str]], environments: list[str]
-) -> tuple[list[Board], list[Board]]:
-    """(boards d'équipe, boards de mises en prod)."""
-    roles = {b.id: board_role(b.name, columns(b.id), environments) for b in boards}
-    return [b for b in boards if roles[b.id] == "team"], [
-        b for b in boards if roles[b.id] == "deploy"
-    ]
+# Intentions qui suivent le code : la RC y fait entrer le ticket.
+_AFTER_CODE = ("install", "check", "acceptance")
 
 
 def projects(issues: Iterable[Issue]) -> tuple[list[str], list[str]]:
@@ -59,17 +28,23 @@ def projects(issues: Iterable[Issue]) -> tuple[list[str], list[str]]:
 def guess_columns(
     jira: JiraConfig, dev: list[str], deploy: list[str], environments: list[str]
 ) -> None:
-    """Remplit les colonnes vides d'après leur nom ; ne touche jamais à une valeur réglée."""
-    jira.rc_from_statuses = jira.rc_from_statuses or [c for c in dev if _REVIEW.search(c)]
-    jira.status_after_rc = jira.status_after_rc or _after_rc(dev)
-    if not jira.rc_from_statuses and jira.status_after_rc in dev[1:]:  # pas de colonne de revue :
+    """Rôles des colonnes d'après leur intention (apprise des faits) ; `deploy` vide = un seul
+    board. Ne touche jamais à une valeur réglée."""
+    intents = jira.intents
+    after_code = [c for c in dev if intents.get(c) in _AFTER_CODE]
+    jira.status_after_rc = jira.status_after_rc or (after_code[0] if after_code else "")
+    if not jira.rc_from_statuses and jira.status_after_rc in dev[1:]:
         jira.rc_from_statuses = [dev[dev.index(jira.status_after_rc) - 1]]  # l'étape d'avant
-    for env in environments:
-        if not jira.status_after_deploy.get(env) and (guessed := _guess_env(deploy, env)):
-            jira.status_after_deploy[env] = guessed
+    # Sur un board MEP, chaque MR de déploiement compte ; sur le board de l'équipe, la
+    # première MR d'infra est l'installation en recette.
+    kinds = ("install", "deploy") if deploy else ("deploy",)
+    deployments = [c for c in deploy or dev if intents.get(c) in kinds]
+    for env, column in zip(environments, deployments):
+        jira.status_after_deploy.setdefault(env, column)
     last = [jira.status_after_deploy.get(env, "") for env in environments[-1:]]
     jira.final_from_statuses = jira.final_from_statuses or [s for s in last if s]
-    jira.status_after_final = jira.status_after_final or _first(deploy[::-1], _DONE)
+    done = [c for c in deploy or dev if intents.get(c) == "done"]
+    jira.status_after_final = jira.status_after_final or (done[-1] if done else "")
 
 
 def flow(paths: list[list[str]], columns: list[str]) -> list[str]:
@@ -98,13 +73,25 @@ def missing(jira: JiraConfig, environments: list[str]) -> list[str]:
     return [f for f in fields if not _value(jira, f)]
 
 
-def gitlab_url(links: Iterable[str]) -> str:
-    """Adresse du GitLab d'après les liens d'un ticket (MR, commit…) ; vide si aucun."""
-    for link in links:
-        parts = urlsplit(link)
-        if _GITLAB_PATH.search(parts.path) or "gitlab" in (parts.hostname or ""):
-            return f"{parts.scheme}://{parts.netloc}"
-    return ""
+def code_hosts(links: Iterable[str], jira_url: str) -> list[str]:
+    """Hôtes vers lesquels pointent les liens de mes tickets, du plus cité au moins cité, sans
+    Jira lui-même : le GitLab est celui qui acceptera le token."""
+    jira = urlsplit(jira_url).netloc
+    hosts = Counter(
+        f"{parts.scheme}://{parts.netloc}"
+        for parts in map(urlsplit, links)
+        if parts.netloc and parts.netloc != jira
+    )
+    return [host for host, _ in hosts.most_common()]
+
+
+def base_candidates(url: str) -> list[str]:
+    """Adresses de base possibles d'une URL collée depuis le navigateur, de l'hôte seul au
+    chemin complet : la première où Jira répond est la bonne (context path compris)."""
+    parts = urlsplit(url.strip())
+    root = f"{parts.scheme}://{parts.netloc}"
+    segments = [s for s in parts.path.split("/") if s]
+    return [root + "".join(f"/{s}" for s in segments[:n]) for n in range(len(segments) + 1)]
 
 
 def _value(jira: JiraConfig, field: str):
@@ -115,31 +102,6 @@ def _value(jira: JiraConfig, field: str):
 
 def _project(key: str) -> str:
     return key.rsplit("-", 1)[0]
-
-
-def _after_rc(statuses: list[str]) -> str:
-    """Colonne après la RC : celle qui suit la revue dans le flux (son nom aide à choisir)."""
-    reviews = [i for i, s in enumerate(statuses) if _REVIEW.search(s)]
-    if not reviews:
-        return _first(statuses, _AFTER_RC)
-    following = statuses[reviews[-1] + 1 :]
-    return _first(following, _AFTER_RC) or (following[0] if following else "")
-
-
-def _first(statuses: list[str], pattern: re.Pattern) -> str:
-    return next((name for name in statuses if pattern.search(name)), "")
-
-
-def _env_pattern(env: str) -> re.Pattern:
-    return re.compile(rf"(?<![\w-]){re.escape(env)}\b", re.IGNORECASE)
-
-
-def _guess_env(statuses: list[str], env: str) -> str:
-    """« En preprod » pour preprod, « En prod » (pas « En preprod ») pour prod."""
-    matching = [name for name in statuses if _env_pattern(env).search(name)]
-    return next((n for n in matching if re.match(r"(en|d[eé]ploy)", n, re.IGNORECASE)), "") or (
-        matching[0] if matching else ""
-    )
 
 
 # --- intention de chaque colonne : ce qu'on y fait, une liste fixe quel que soit le board ---

@@ -36,6 +36,7 @@ class History:
 
     key: str
     stays: tuple[Stay, ...]
+    links: tuple[str, ...] = ()  # tickets liés : ceux d'un ticket MEP portent le code
 
     @property
     def path(self) -> list[str]:

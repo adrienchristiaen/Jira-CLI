@@ -19,6 +19,8 @@ class ApiError(RuntimeError):
 
 def jira_session(config: JiraConfig, token: str) -> requests.Session:
     session = _session()
+    if not token:  # anonyme : serverInfo, pour savoir à quel Jira on parle
+        return session
     if config.auth == "basic":
         session.auth = (config.user, token)
     elif config.auth == "bearer":

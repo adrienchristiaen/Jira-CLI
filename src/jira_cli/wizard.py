@@ -18,7 +18,7 @@ from . import discovery
 from .config import Config, GitLabConfig, JiraConfig, RepoConfig
 from .gitlab import GitLabClient
 from .http import ApiError, gitlab_session, jira_session
-from .jira import JiraClient, is_cloud, parse_url
+from .jira import JiraClient
 from .models import Board, History, Issue
 from .tokens import TokenStore
 
@@ -28,7 +28,6 @@ NO_ROLE = "Aucun rôle"
 NO_INTENT = "Rien de particulier"
 SAME_BOARD = "Le même board"
 NETWORK_ERRORS = (ApiError, requests.RequestException)
-DEFAULT_GITLAB = "https://gitlab.com"
 
 
 def _jira_client(jira: JiraConfig, token: str) -> JiraClient:
@@ -58,14 +57,14 @@ def run_init(
     prompter.info("\nCe que j'ai trouvé")
     found = _Discovery(prompter, jira, gitlab, tracker, environments)
     found.run()
-    found.learn(_connect_gitlab(prompter, gitlab, store, gitlab_client))
+    found.learn(_connect_gitlab(prompter, gitlab, found.code_hosts, store, gitlab_client))
     found.ask_missing()
     prompter.info(found.summary())
     if not prompter.confirm("Tout est juste ?", True):
         url = gitlab.url
         found.correct()
         if gitlab.url != url:
-            _connect_gitlab(prompter, gitlab, store, gitlab_client)
+            _connect_gitlab(prompter, gitlab, [gitlab.url], store, gitlab_client)
     config = Config(jira=jira, gitlab=gitlab, repos=repos)
     path = config_module.save(config)
     prompter.success(f"Configuration écrite dans {path} (tokens chiffrés à côté).")
@@ -81,33 +80,38 @@ def _current() -> Config | None:
 
 
 def _setup_jira(prompter, current: JiraConfig | None, store: TokenStore, jira_client):
-    prompter.explain(
-        "L'adresse que tu ouvres dans ton navigateur (l'URL d'un board marche aussi), ex.\n"
-        "  https://jira.monentreprise.fr   ou   https://monentreprise.atlassian.net"
-    )
+    prompter.explain("L'adresse que tu ouvres dans ton navigateur (l'URL d'un board marche aussi).")
     while True:
-        url, board = parse_url(_ask_url(prompter, "URL Jira", current.url if current else ""))
+        pasted = _ask_url(prompter, "URL Jira", current.url if current else "")
+        found = _find_jira(pasted, jira_client)
+        if not found:
+            prompter.error("Aucun Jira ne répond à cette adresse : vérifie l'URL.")
+            continue
+        url, cloud = found
         jira = current or JiraConfig(url=url)
-        jira.url, jira.board = url, board or jira.board
-        if is_cloud(url):  # Jira Cloud : email + API token
+        jira.url = url
+        if cloud:  # Jira Cloud : email + API token
             jira.auth = "basic"
             jira.user = prompter.ask("Email du compte Jira", jira.user)
-            prompter.explain(
-                "API token : https://id.atlassian.com/manage-profile/security/api-tokens"
-            )
         else:  # Data Center / Server : Personal Access Token
             jira.auth = "bearer"
-            prompter.explain(
-                "Personal Access Token : avatar → Profil → Personal Access Tokens → Créer\n"
-                f"  {url}/secure/ViewProfile.jspa?selectedTab="
-                "com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens"
-            )
         token = _ask_token(prompter, "Token Jira", store.get("jira"))
         tracker = jira_client(jira, token)
         if _check(prompter, "Jira", tracker.whoami, _jira_hint):
             store.set("jira", token)
             return jira, tracker
         current = jira
+
+
+def _find_jira(pasted: str, jira_client) -> tuple[str, bool] | None:
+    """(adresse de base, Cloud ?) : la première adresse, de l'hôte seul au chemin collé, où
+    Jira répond sans token (context path compris)."""
+    for base in discovery.base_candidates(pasted):
+        try:
+            return base, jira_client(JiraConfig(url=base), "").is_cloud()
+        except NETWORK_ERRORS:
+            continue
+    return None
 
 
 def _jira_hint(status: int | None) -> str:
@@ -127,17 +131,17 @@ class _Discovery:
         self.issues: list[Issue] = []
         self.team: list[Board] = []
         self.deploy: list[Board] = []
-        self.gitlab_source = ""
+        self.code_hosts: list[str] = []  # hôtes cités par les liens de mes tickets
         self._columns: dict[str, list[str]] = {}  # flux des boards retenus
         self._config: dict[str, list[str]] = {}  # colonnes configurées de chaque board
         self._histories: dict[str, list[History]] = {}  # vie des derniers tickets terminés
         self._host = None  # GitLab, pour apprendre ce qu'on fait dans chaque colonne
+        self._sources: dict[str, str] = {}  # hôte -> ticket qui y renvoie
 
     def run(self) -> None:
         self.issues = _quiet(lambda: self.tracker.search(self.jira.jql), [])
         self._find_boards()
-        self._guess_columns()
-        self._find_gitlab()
+        self._find_code_hosts()
 
     def learn(self, host) -> None:
         """Intention de chaque colonne, apprise de ce que GitLab a vu pendant que les derniers
@@ -149,8 +153,21 @@ class _Discovery:
         keys = list(dict.fromkeys(h.key for h in histories if h.key))
         self.prompter.explain(f"Ce qui s'est passé dans GitLab pour {len(keys)} tickets terminés…")
         events = _parallel(lambda key: _quiet(lambda: host.code_events(key), []), keys)
-        for column, intent in discovery.learn_intents(histories, dict(zip(keys, events))).items():
+        found = dict(zip(keys, events))
+        # Un ticket MEP n'a pas de code : ce sont ses tickets liés qui en ont.
+        linked = [k for h in histories if not found.get(h.key) for k in h.links if k not in found]
+        linked = list(dict.fromkeys(linked))
+        found |= dict(
+            zip(linked, _parallel(lambda k: _quiet(lambda: host.code_events(k), []), linked))
+        )
+        merged = {
+            h.key: found.get(h.key)
+            or sorted((e for k in h.links for e in found.get(k, [])), key=lambda e: e.at)
+            for h in histories
+        }
+        for column, intent in discovery.learn_intents(histories, merged).items():
             self.jira.intents[column] = intent
+        self._guess_columns()
 
     def ask_missing(self) -> None:
         for board, fields in self._boards():
@@ -182,7 +199,6 @@ class _Discovery:
             self.jira.rc_from_statuses, self.jira.status_after_rc = [], ""
             self.jira.status_after_deploy, self.jira.final_from_statuses = {}, []
             self.jira.status_after_final, self.jira.intents = "", {}
-            self._guess_columns()
             if self._host:
                 self.learn(self._host)
         for board, fields in self._boards():
@@ -200,9 +216,9 @@ class _Discovery:
                 lines.append("    pas trouvé : " + ", ".join(discovery.label(f) for f in missing))
         if not self.jira.deploy_board:
             lines.append("  Mises en prod : le même board")
+        source = self._sources.get(self.gitlab.url)
         lines.append(
-            f"  GitLab : {self.gitlab.url}"
-            + (f"  (trouvé dans {self.gitlab_source})" if self.gitlab_source else "")
+            f"  GitLab : {self.gitlab.url}" + (f"  (trouvé dans {source})" if source else "")
         )
         return "\n".join(lines)
 
@@ -223,27 +239,22 @@ class _Discovery:
     # --- déductions ---
 
     def _find_boards(self) -> None:
-        envs = self.environments
+        """Board de l'équipe : celui des projets de mes tickets. Board des mises en prod : celui
+        qui porte le plus de tickets d'autres projets liés aux miens. Aucun nom n'est lu."""
         own, linked = discovery.projects(self.issues)
-        boards = _quiet(lambda: self.tracker.boards(own), []) if own else []
+        mine = _quiet(lambda: self.tracker.boards(own), []) if own else []
         others = (
-            [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in boards]
+            [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in mine]
             if linked
             else []
         )
-        _parallel(self._board_columns, [b.id for b in boards + others])
-        team, deploy = discovery.split_boards(boards, self._board_columns, envs)
-        deploy += discovery.split_boards(others, self._board_columns, envs)[1]
-        links = self._link_counts(deploy or others + team)
-        if not deploy:  # ni nom ni colonnes de prod : le board des tickets liés aux miens
-            linked_boards = [b for b in others + team if links.get(b.id)]
-            if [b for b in team if b not in linked_boards]:
-                team = [b for b in team if b not in linked_boards]
-                deploy = linked_boards
-        self.team, self.deploy = team, discovery.rank_deploy(deploy, links)[0]
+        links = self._link_counts(mine + others)
+        team = [b for b in mine if not links.get(b.id)] or mine
+        self.team = team
+        self.deploy = discovery.rank_deploy([b for b in mine + others if links.get(b.id)], links)[0]
         known = {b.id for b in self.team + self.deploy}
-        if self.jira.board not in known and (team or deploy):
-            self.jira.board = _one_board(self.prompter, "Board de ton équipe", team or deploy)
+        if self.jira.board not in known and team:
+            self.jira.board = _one_board(self.prompter, "Board de ton équipe", team)
         if self.jira.deploy_board not in known:
             candidates = [b for b in self.deploy if b.id != self.jira.board]
             ranked, sure = discovery.rank_deploy(candidates, links)
@@ -273,19 +284,23 @@ class _Discovery:
 
     def _guess_columns(self) -> None:
         dev = self._statuses(self.jira.board)
-        deploy = self._statuses(self.jira.deploy_board) if self.jira.deploy_board else dev
+        deploy = self._statuses(self.jira.deploy_board) if self.jira.deploy_board else []
         discovery.guess_columns(self.jira, dev, deploy, self.environments)
 
-    def _find_gitlab(self) -> None:
+    def _find_code_hosts(self) -> None:
+        """Le GitLab est un des hôtes vers lesquels pointent mes tickets : le token tranchera."""
         if self.gitlab.url:
+            self.code_hosts = [self.gitlab.url]
             return
-        for issue in self.issues[:5]:
-            links = _quiet(lambda key=issue.key: self.tracker.dev_links(key), [])
-            if url := discovery.gitlab_url(links):
-                self.gitlab.url, self.gitlab_source = url, issue.key
-                return
-        self.prompter.explain("Aucun ticket ne pointe vers un GitLab : donne son adresse.")
-        self.gitlab.url = _ask_url(self.prompter, "URL GitLab", DEFAULT_GITLAB)
+        links = _parallel(
+            lambda key: _quiet(lambda: self.tracker.dev_links(key), []),
+            [i.key for i in self.issues[:5]],
+        )
+        self.code_hosts = discovery.code_hosts([u for found in links for u in found], self.jira.url)
+        for issue, found in zip(self.issues, links):
+            for host in self.code_hosts:
+                if any(u.startswith(host + "/") for u in found):
+                    self._sources.setdefault(host, issue.key)
 
     def _board_columns(self, board: str) -> list[str]:
         """Colonnes configurées du board (un appel, mis en cache) ; tous les statuts sans board."""
@@ -349,17 +364,25 @@ class _Discovery:
             discovery.assign(self.jira, column, field, columns, self.environments)
 
 
-def _connect_gitlab(prompter, gitlab: GitLabConfig, store: TokenStore, gitlab_client):
-    prompter.explain(
-        f"Token GitLab (scope « api ») : {gitlab.url}/-/user_settings/personal_access_tokens"
-    )
+def _connect_gitlab(prompter, gitlab: GitLabConfig, hosts: list[str], store, gitlab_client):
+    """Le token GitLab, essayé sur chaque hôte candidat : celui qui l'accepte est le GitLab."""
     while True:
+        if not hosts:
+            prompter.explain("Aucun ticket ne pointe vers un GitLab : donne son adresse.")
+            hosts = [_ask_url(prompter, "URL GitLab", gitlab.url)]
         token = _ask_token(prompter, "Token GitLab", store.get("gitlab"))
-        host = gitlab_client(gitlab, token)
-        if _check(prompter, "GitLab", host.whoami):
+        for url in hosts:
+            host = gitlab_client(GitLabConfig(url, gitlab.auth), token)
+            try:
+                who = host.whoami()
+            except NETWORK_ERRORS:
+                continue
+            gitlab.url = url
+            prompter.success(f"Connecté à GitLab ({url}) en tant que {who}")
             store.set("gitlab", token)
             return host
-        gitlab.url = _ask_url(prompter, "URL GitLab", gitlab.url)
+        prompter.error("Connexion à GitLab impossible avec ce token : " + ", ".join(hosts))
+        hosts = []
 
 
 # --- briques ---

@@ -27,10 +27,49 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def life(key, *stays, links=()):
+    """stays : (colonne, entrée, sortie ou None, qui l'en sort)."""
+    return History(
+        key,
+        tuple(Stay(c, at(a), at(b) if b is not None else None, m) for c, a, b, m in stays),
+        links,
+    )
+
+
+# Ce qu'ont vécu les derniers tickets terminés : c'est d'eux que tout se déduit.
+TEAM_LIFE = life(
+    "PROJ-1",
+    ("A faire", 0, 1, "dev"),
+    ("En cours", 1, 3, "dev"),  # commits
+    ("En revue", 3, 4, "dev"),  # MR ouverte, plus rien
+    ("A Recetter", 4, 5, "po"),  # plus rien, quelqu'un d'autre fait avancer
+    ("Fait", 5, None, ""),
+)
+MEP_LIFE = life(
+    "MEP-1",
+    ("A installer preprod", 10, 11, "ops"),
+    ("En preprod", 11, 12, "ops"),  # MR dans le repo Kube
+    ("En prod", 12, 13, "ops"),  # seconde MR dans le repo Kube
+    ("Livré", 13, None, ""),
+    links=("PROJ-1",),
+)
+EVENTS = {
+    "PROJ-1": [
+        CodeEvent("commit", at(2), "team/app"),
+        CodeEvent("mr_opened", at(2.5), "team/app"),
+        CodeEvent("mr_opened", at(11.5), "team/kube"),
+        CodeEvent("mr_opened", at(12.5), "team/kube"),
+    ]
+}
+
+
 def tracker(**overrides) -> FakeTracker:
     values = {
-        "all_boards": [Board("4922", "Squad Paiement"), Board("77", "MEP Preprod / Prod")],
+        "issue": Issue("PROJ-123", "Paiements", "En cours", links=("MEP-9",)),
+        "all_boards": [Board("4922", "Squad Paiement"), Board("77", "Phenix Deployments")],
         "board_statuses": {"4922": DEV, "77": DEPLOY, "1": DEV},
+        "linked_by_board": {"77": [Issue("MEP-9", "MEP", "En preprod")]},
+        "histories": {"4922": [TEAM_LIFE], "77": [MEP_LIFE]},
         "links": [MR_LINK],
     }
     return FakeTracker(**{**values, **overrides})
@@ -39,7 +78,8 @@ def tracker(**overrides) -> FakeTracker:
 def init(answers, jira=None, gitlab=None):
     prompter = ScriptedPrompter(answers)
     jira = jira or tracker()
-    config = wizard.run_init(prompter, lambda c, t: jira, lambda c, t: gitlab or FakeHost())
+    host = gitlab or FakeHost(events=EVENTS)
+    config = wizard.run_init(prompter, lambda c, t: jira, lambda c, t: host)
     return prompter, config
 
 
@@ -61,12 +101,13 @@ def test_data_center_needs_only_the_url_and_two_tokens(home):
     assert saved.gitlab.url == "https://gitlab.acme.fr"  # trouvé dans les liens du ticket
     assert TokenStore(home).get("jira") == "pat" and TokenStore(home).get("gitlab") == "gl"
     summary = "\n".join(prompter.messages)
-    assert "Squad Paiement" in summary and "MEP Preprod / Prod" in summary
+    assert "Squad Paiement" in summary and "Phenix Deployments" in summary
     assert "PROJ-123" in summary  # d'où vient l'adresse GitLab
 
 
 def test_jira_cloud_also_needs_the_account_email():
-    prompter, config = init(["https://acme.atlassian.net", "me@acme.fr", "tok", "gl", None])
+    jira = tracker(cloud=True)  # Jira le dit lui-même : aucun nom de domaine n'est lu
+    prompter, config = init(["https://jira.acme.fr", "me@acme.fr", "tok", "gl", None], jira)
     assert questions(prompter)[:2] == ["URL Jira", "Email du compte Jira"]
     assert (config.jira.auth, config.jira.user) == ("basic", "me@acme.fr")
 
@@ -78,9 +119,10 @@ def test_url_without_scheme_is_refused():
 
 
 def test_gitlab_url_is_asked_only_when_no_ticket_links_to_it():
-    prompter, config = init(["https://jira.acme.fr", "pat", None, "gl", None], tracker(links=[]))
+    answers = ["https://jira.acme.fr", "pat", "https://git.acme.fr", "gl", None]
+    prompter, config = init(answers, tracker(links=[]))
     assert "URL GitLab" in questions(prompter)
-    assert config.gitlab.url == "https://gitlab.com"
+    assert config.gitlab.url == "https://git.acme.fr"
 
 
 def test_several_team_boards_are_one_short_question():
@@ -104,8 +146,22 @@ def test_deploy_board_is_found_through_the_linked_mep_ticket():
 
 
 def test_without_deploy_board_everything_happens_on_the_team_board():
-    jira = tracker(all_boards=[Board("4922", "Squad")], board_statuses={"4922": DEV + DEPLOY})
-    _, config = init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    one = life(
+        "PROJ-1",
+        ("En cours", 1, 3, "dev"),
+        ("A Recetter", 4, 5, "dev"),  # installation en recette : première MR Kube
+        ("En preprod", 11, 12, "ops"),
+        ("En prod", 12, 13, "ops"),
+        ("Livré", 13, None, ""),
+    )
+    events = {"PROJ-1": [*EVENTS["PROJ-1"], CodeEvent("mr_opened", at(4.5), "team/kube")]}
+    jira = tracker(
+        all_boards=[Board("4922", "Squad")],
+        board_statuses={"4922": DEV + DEPLOY},
+        linked_by_board={},
+        histories={"4922": [one]},
+    )
+    _, config = init(["https://jira.acme.fr", "pat", "gl", None], jira, FakeHost(events=events))
     assert (config.jira.board, config.jira.deploy_board) == ("4922", "")
     assert config.jira.status_after_deploy["prod"] == "En prod"
 
@@ -113,7 +169,7 @@ def test_without_deploy_board_everything_happens_on_the_team_board():
 def test_summary_shows_each_board_with_its_columns_and_their_role():
     prompter, _ = init(["https://jira.acme.fr", "pat", "gl", None])
     summary = next(m for m in prompter.messages if "Squad Paiement" in m)
-    team, deploy = summary.split("MEP Preprod / Prod")
+    team, deploy = summary.split("Phenix Deployments")
     assert "En revue" in team and "MR prête pour une RC" in team
     assert "A Recetter" in team and "Après la RC" in team
     assert "En preprod" in deploy and "Après déploiement preprod" in deploy
@@ -190,9 +246,9 @@ def test_failed_connection_offers_to_retry(home):
         def whoami(self):
             raise ApiError("GET https://jira.acme.fr/rest/api/2/myself -> 401", 401)
 
-    clients = iter([Refused(), tracker()])
+    good, refused = tracker(), Refused()
     prompter = ScriptedPrompter(["https://jira.acme.fr", "bad", True, None, "good", "gl", None])
-    wizard.run_init(prompter, lambda c, t: next(clients), lambda c, t: FakeHost())
+    wizard.run_init(prompter, lambda c, t: refused if t == "bad" else good, lambda c, t: FakeHost())
     assert TokenStore(home).get("jira") == "good"
     assert any("Token refusé" in m for m in prompter.messages)
 
@@ -216,8 +272,18 @@ def test_deploy_board_is_the_board_holding_tickets_linked_to_mine():
 
 def test_only_columns_tickets_really_go_through_are_shown():
     columns = ["Conception", "A qualifier", "WIP", "En revue", "A Recetter", "Fait", "Annulée"]
-    history = [["WIP", "En revue", "A Recetter", "Fait"]] * 3
-    jira = tracker(board_statuses={"4922": columns, "77": DEPLOY}, histories={"4922": history})
+    wip = life(
+        "PROJ-1",
+        ("WIP", 1, 3, "dev"),
+        ("En revue", 3, 4, "dev"),
+        ("A Recetter", 4, 5, "po"),
+        ("Fait", 5, None, ""),
+    )
+    history = [wip] * 3
+    jira = tracker(
+        board_statuses={"4922": columns, "77": DEPLOY},
+        histories={"4922": history, "77": [MEP_LIFE]},
+    )
     answers = ["https://jira.acme.fr", "pat", "gl", False, None, None, None, None, None]
     prompter, config = init(answers, jira)
     menu = dict(prompter.offered)["Colonne à corriger · Squad Paiement"]
@@ -225,7 +291,7 @@ def test_only_columns_tickets_really_go_through_are_shown():
     assert config.jira.status_after_rc == "A Recetter"  # pas « A qualifier », jamais traversée
 
 
-def test_among_deploy_boards_the_one_holding_my_linked_tickets_wins():
+def test_deploy_board_is_asked_when_two_boards_hold_my_linked_tickets_equally():
     issue = Issue("PROJ-123", "Paiements", "En cours", links=("MEP-9", "INC-1"))
     boards = [
         Board("4922", "Squad Paiement"),
@@ -242,9 +308,13 @@ def test_among_deploy_boards_the_one_holding_my_linked_tickets_wins():
             "5": [Issue("INC-1", "x", "Ouvert")],
         },
     )
-    prompter, config = init(["https://jira.acme.fr", "pat", "Squad Paiement", "gl", None], jira)
+    answers = ["https://jira.acme.fr", "pat", "Squad Paiement", "Phenix Deployments (MEP/CAB)"]
+    prompter, config = init([*answers, "gl", None], jira)
     assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
-    assert "Board des mises en preprod/prod" not in questions(prompter)
+    assert dict(prompter.offered)["Board des mises en preprod/prod"] == [
+        "INCO",
+        "Phenix Deployments (MEP/CAB)",
+    ]  # aucun nom ne départage : on demande
 
 
 def test_history_is_read_only_for_the_chosen_boards():
@@ -255,7 +325,7 @@ def test_history_is_read_only_for_the_chosen_boards():
         linked_by_board={"77": [Issue("MEP-9", "MEP", "En preprod")]},
         issue=Issue("PROJ-123", "Paiements", "En cours", links=("MEP-9",)),
     )
-    init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    init(["https://jira.acme.fr", "pat", "Squad Paiement", "gl", None], jira)
     assert sorted(set(jira.history_boards)) == ["4922", "77"]
 
 

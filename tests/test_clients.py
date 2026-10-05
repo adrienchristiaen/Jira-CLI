@@ -4,7 +4,7 @@ from fakes import MR
 from jira_cli.config import Config, GitLabConfig, JiraConfig, RepoConfig, load, save
 from jira_cli.gitlab import GitLabClient
 from jira_cli.http import ApiError, check, gitlab_session, jira_session
-from jira_cli.jira import JiraClient, parse_url
+from jira_cli.jira import JiraClient
 from jira_cli.models import Board, Issue
 from jira_cli.tokens import TokenStore
 
@@ -292,24 +292,10 @@ def test_jira_search_falls_back_to_cloud_endpoint():
     assert session.calls[-1][2]["params"]["jql"] == "assignee = currentUser()"
 
 
-@pytest.mark.parametrize(
-    "pasted, expected",
-    [
-        (
-            "https://jira.agilefabric.fr.carrefour.com/secure/RapidBoard.jspa?rapidView=4922",
-            ("https://jira.agilefabric.fr.carrefour.com", "4922"),
-        ),
-        ("https://acme.fr/jira/browse/PROJ-1", ("https://acme.fr/jira", "")),
-        ("https://acme.fr/jira", ("https://acme.fr/jira", "")),
-        (
-            "https://acme.atlassian.net/jira/software/projects/P/boards/7",
-            ("https://acme.atlassian.net", "7"),
-        ),
-        ("https://acme.atlassian.net", ("https://acme.atlassian.net", "")),
-    ],
-)
-def test_parse_url_keeps_base_and_board(pasted, expected):
-    assert parse_url(pasted) == expected
+@pytest.mark.parametrize("deployment, cloud", [("Cloud", True), ("DataCenter", False)])
+def test_server_info_says_whether_jira_is_cloud_without_any_token(deployment, cloud):
+    session = FakeSession({"/serverInfo": FakeResponse({"deploymentType": deployment})})
+    assert JiraClient("https://jira", session).is_cloud() is cloud
 
 
 def test_error_summary_is_one_line_for_html_and_json():
@@ -437,7 +423,10 @@ def test_board_history_gives_each_stay_in_a_column_and_who_ended_it():
 
     issue = {
         "key": "PROJ-1",
-        "fields": {"created": "2026-01-01T09:00:00.000+0200"},
+        "fields": {
+            "created": "2026-01-01T09:00:00.000+0200",
+            "issuelinks": [{"outwardIssue": {"key": "MEP-9"}}],
+        },
         "changelog": {
             "histories": [  # pas forcément dans l'ordre
                 change("2026-01-03T10:00:00.000+0200", "En revue", "Fait", "lead"),
@@ -455,6 +444,7 @@ def test_board_history_gives_each_stay_in_a_column_and_who_ended_it():
     assert (ouvert.start.hour, ouvert.end.day, ouvert.mover) == (7, 1, "dev")  # en UTC
     assert (wip.end.day, wip.mover) == (2, "dev")
     assert (fait.end, fait.mover) == (None, "")
+    assert history.links == ("MEP-9",)
     params = session.calls[0][2]["params"]
     assert params["expand"] == "changelog" and "statusCategory = Done" in params["jql"]
 

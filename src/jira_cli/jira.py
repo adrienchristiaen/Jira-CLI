@@ -2,39 +2,11 @@
 
 from __future__ import annotations
 
-import re
-from urllib.parse import parse_qs, urlsplit
 
 import requests
 
 from .http import ApiError, check, timestamp
 from .models import Board, History, Issue, Stay
-
-# Début du chemin des pages de Jira : ce qui précède est l'adresse de base (+ context path).
-_UI_PATHS = re.compile(r"/(secure|browse|projects|issues|plugins|rest|login\.jsp)(/|$)")
-
-
-def is_cloud(url: str) -> bool:
-    return (urlsplit(url).hostname or "").endswith(".atlassian.net")
-
-
-def parse_url(url: str) -> tuple[str, str]:
-    """(adresse de base, id du board) d'une URL collée depuis le navigateur.
-
-    https://jira.acme.fr/secure/RapidBoard.jspa?rapidView=42 -> (https://jira.acme.fr, "42")
-    https://acme.atlassian.net/jira/software/projects/P/boards/7 -> (https://acme.atlassian.net, "7")
-    Un éventuel context path (https://acme.fr/jira/secure/...) est gardé.
-    """
-    parts = urlsplit(url.strip())
-    path = parts.path.rstrip("/")
-    if is_cloud(url):
-        path = ""  # pas de context path sur Jira Cloud
-    elif match := _UI_PATHS.search(path):
-        path = path[: match.start()]
-    board = parse_qs(parts.query).get("rapidView", [""])[0]
-    if not board and (match := re.search(r"/boards/(\d+)", parts.path)):
-        board = match[1]
-    return f"{parts.scheme}://{parts.netloc}{path}", board
 
 
 class JiraClient:
@@ -50,6 +22,11 @@ class JiraClient:
             self._session.get(f"{self._api}/issue/{key}", params={"fields": "summary,status"})
         ).json()
         return _issue(data)
+
+    def is_cloud(self) -> bool:
+        """Jira Cloud (email + API token) ou Data Center (PAT) : Jira le dit, sans token."""
+        info = check(self._session.get(f"{self._api}/serverInfo")).json()
+        return info.get("deploymentType") == "Cloud"
 
     def whoami(self) -> str:
         data = check(self._session.get(f"{self._api}/myself")).json()
@@ -115,7 +92,7 @@ class JiraClient:
         """Vie des derniers tickets terminés du board : chaque colonne, quand, et qui l'en sort."""
         params = {
             "jql": "statusCategory = Done ORDER BY updated DESC",
-            "fields": "status,created",
+            "fields": "status,created,issuelinks",
             "expand": "changelog",
             "maxResults": limit,
         }
@@ -167,11 +144,14 @@ class JiraClient:
 
 def _issue(data: dict) -> Issue:
     fields = data["fields"]
-    links = tuple(
+    return Issue(data["key"], fields["summary"], fields["status"]["name"], _links(fields))
+
+
+def _links(fields: dict) -> tuple[str, ...]:
+    return tuple(
         (link.get("outwardIssue") or link.get("inwardIssue"))["key"]
         for link in fields.get("issuelinks") or []
     )
-    return Issue(data["key"], fields["summary"], fields["status"]["name"], links)
 
 
 def _history(issue: dict) -> History:
@@ -179,7 +159,8 @@ def _history(issue: dict) -> History:
     changes = [(h, i) for h in histories for i in h["items"] if i.get("field") == "status"]
     if not changes:
         return History(issue.get("key", ""), ())
-    start = timestamp((issue.get("fields") or {}).get("created", ""))
+    fields = issue.get("fields") or {}
+    start = timestamp(fields.get("created", ""))
     stays = []
     for history, item in changes:
         end, author = timestamp(history["created"]), history.get("author") or {}
@@ -187,4 +168,4 @@ def _history(issue: dict) -> History:
         stays.append(Stay(item["fromString"], start, end, who))
         start = end
     stays.append(Stay(changes[-1][1]["toString"], start))
-    return History(issue.get("key", ""), tuple(stays))
+    return History(issue.get("key", ""), tuple(stays), _links(fields))
