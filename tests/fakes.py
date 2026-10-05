@@ -35,6 +35,12 @@ class FakeTracker:
     histories: dict[str, list] = field(default_factory=dict)
     history_boards: list[str] = field(default_factory=list)
     cloud: bool = False
+    board_tickets: dict[str, list[str]] = field(default_factory=dict)  # clés présentes par board
+
+    def board_issue_count(self, board: str, keys: list[str] | None = None) -> int:
+        """Tickets du board ; parmi `keys` seulement si donné."""
+        held = self.board_tickets.get(board, [])
+        return len(held) if keys is None else sum(k in held for k in keys)
 
     def is_cloud(self) -> bool:
         return self.cloud

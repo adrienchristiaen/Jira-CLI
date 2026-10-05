@@ -88,6 +88,14 @@ class JiraClient:
                     break
         return list(found.values())
 
+    def board_issue_count(self, board: str, keys: list[str] | None = None) -> int:
+        """Tickets du board ; parmi `keys` seulement si donné. Un seul appel, sans les tickets."""
+        params: dict = {"maxResults": 0, "fields": "key"}
+        if keys is not None:
+            params["jql"] = f"key in ({','.join(keys)})"
+        url = f"{self._agile}/board/{board}/issue"
+        return check(self._session.get(url, params=params)).json()["total"]
+
     def board_history(self, board: str, limit: int = 30) -> list[History]:
         """Vie des derniers tickets terminés du board : chaque colonne, quand, et qui l'en sort."""
         params = {

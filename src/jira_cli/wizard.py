@@ -249,12 +249,15 @@ class _Discovery:
             else []
         )
         links = self._link_counts(mine + others)
-        team = [b for b in mine if not links.get(b.id)] or mine
+        # L'équipe : le board qui porte mes tickets, même s'il porte aussi des tickets liés.
+        team, sure = discovery.rank_team(mine, self._held(mine))
         self.team = team
         self.deploy = discovery.rank_deploy([b for b in mine + others if links.get(b.id)], links)[0]
         known = {b.id for b in self.team + self.deploy}
         if self.jira.board not in known and team:
-            self.jira.board = _one_board(self.prompter, "Board de ton équipe", team)
+            self.jira.board = (
+                team[0].id if sure else _one_board(self.prompter, "Board de ton équipe", team)
+            )
         if self.jira.deploy_board not in known:
             candidates = [b for b in self.deploy if b.id != self.jira.board]
             ranked, sure = discovery.rank_deploy(candidates, links)
@@ -266,6 +269,17 @@ class _Discovery:
                 self.jira.deploy_board = _one_board(
                     self.prompter, "Board des mises en preprod/prod", ranked
                 )
+
+    def _held(self, boards: list[Board]) -> dict[str, tuple[int, int]]:
+        """Par board : (combien de mes tickets il porte, combien de tickets en tout)."""
+        keys = [i.key for i in self.issues]
+        if not keys:
+            return {}
+        mine = _parallel(
+            lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id, keys), 0), boards
+        )
+        total = _parallel(lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id), 0), boards)
+        return {b.id: (m, t) for b, m, t in zip(boards, mine, total)}
 
     def _link_counts(self, boards: list[Board]) -> dict[str, int]:
         """Par board : combien de tickets d'autres projets liés aux miens il porte."""
