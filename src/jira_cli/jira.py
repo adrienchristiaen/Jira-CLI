@@ -43,6 +43,7 @@ class JiraClient:
         self._api = self._base + "/rest/api/2"
         self._agile = self._base + "/rest/agile/1.0"
         self._session = session
+        self._names: dict[str, str] | None = None
 
     def get_issue(self, key: str) -> Issue:
         data = check(
@@ -127,10 +128,7 @@ class JiraClient:
 
         Avec un board : ceux de ses colonnes, dans leur ordre ; sinon tous ceux de l'instance.
         """
-        names = {
-            status["id"]: status["name"]
-            for status in check(self._session.get(f"{self._api}/status")).json()
-        }
+        names = self._status_names()
         if not board:
             return sorted(set(names.values()), key=str.casefold)
         url = f"{self._agile}/board/{board}/configuration"
@@ -139,6 +137,13 @@ class JiraClient:
             names[s["id"]] for column in columns for s in column["statuses"] if s["id"] in names
         ]
         return list(dict.fromkeys(ordered))
+
+    def _status_names(self) -> dict[str, str]:
+        """{id: nom} des statuts de l'instance ; lu une fois, partagé par tous les boards."""
+        if self._names is None:
+            statuses = check(self._session.get(f"{self._api}/status")).json()
+            self._names = {status["id"]: status["name"] for status in statuses}
+        return self._names
 
     def transition(self, key: str, status: str) -> None:
         url = f"{self._api}/issue/{key}/transitions"

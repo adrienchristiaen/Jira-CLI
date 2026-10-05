@@ -196,16 +196,21 @@ def assign(
     jira.final_from_statuses = [s for s in last if s]
 
 
-def linked_boards(
-    issues: Iterable[Issue], boards: list[Board], linked_issues: Callable[[str, str], list[Issue]]
-) -> list[Board]:
-    """Boards qui portent des tickets liés aux miens, dans un autre projet (ticket MEP…)."""
-    mine = [i for i in issues if any(_project(k) != _project(i.key) for k in i.links)][:3]
-    found = []
-    for board in boards:
-        for issue in mine:
-            others = linked_issues(issue.key, board.id)
-            if any(_project(o.key) != _project(issue.key) for o in others):
-                found.append(board)
-                break
-    return found
+def cross_linked(issues: Iterable[Issue]) -> list[Issue]:
+    """Mes tickets liés à un ticket d'un autre projet (ticket MEP…), les plus récents."""
+    return [i for i in issues if any(_project(k) != _project(i.key) for k in i.links)][:3]
+
+
+def count_cross(issue: Issue, found: Iterable[Issue]) -> int:
+    """Tickets d'un autre projet que `issue`, parmi ceux trouvés liés à lui sur un board."""
+    return sum(_project(o.key) != _project(issue.key) for o in found)
+
+
+def rank_deploy(candidates: list[Board], links: dict[str, int]) -> tuple[list[Board], bool]:
+    """Boards de mises en prod, celui qui porte le plus de tickets liés aux miens en tête ;
+    et si ce premier s'impose (seul, ou strictement plus de liens que le suivant)."""
+    ranked = sorted(candidates, key=lambda b: -links.get(b.id, 0))
+    sure = len(ranked) == 1 or (
+        len(ranked) > 1 and links.get(ranked[0].id, 0) > links.get(ranked[1].id, 0)
+    )
+    return ranked, sure

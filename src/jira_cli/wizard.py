@@ -9,6 +9,7 @@ demandé, puis tout se corrige d'un « non » au résumé. Relancer l'init repar
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -123,7 +124,8 @@ class _Discovery:
         self.team: list[Board] = []
         self.deploy: list[Board] = []
         self.gitlab_source = ""
-        self._columns: dict[str, list[str]] = {}
+        self._columns: dict[str, list[str]] = {}  # flux des boards retenus
+        self._config: dict[str, list[str]] = {}  # colonnes configurées de chaque board
 
     def run(self) -> None:
         self.issues = _quiet(lambda: self.tracker.search(self.jira.jql), [])
@@ -199,27 +201,53 @@ class _Discovery:
     # --- déductions ---
 
     def _find_boards(self) -> None:
+        envs = self.environments
         own, linked = discovery.projects(self.issues)
         boards = _quiet(lambda: self.tracker.boards(own), []) if own else []
-        team, deploy = discovery.split_boards(boards, self._statuses, self.environments)
-        if linked:  # boards des tickets liés : seuls ceux de mises en prod nous intéressent
-            others = [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in boards]
-            deploy += discovery.split_boards(others, self._statuses, self.environments)[1]
-        linked = discovery.linked_boards(self.issues, team, self.tracker.linked_issues)
-        if linked and len(linked) < len(team):  # board des tickets liés aux miens : les MEP
-            team = [b for b in team if b not in linked]
-            deploy = linked + [b for b in deploy if b not in linked]
-        self.team, self.deploy = team, deploy
-        known = {b.id for b in team + deploy}
+        others = (
+            [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in boards]
+            if linked
+            else []
+        )
+        _parallel(self._board_columns, [b.id for b in boards + others])
+        team, deploy = discovery.split_boards(boards, self._board_columns, envs)
+        deploy += discovery.split_boards(others, self._board_columns, envs)[1]
+        links = self._link_counts(deploy or others + team)
+        if not deploy:  # ni nom ni colonnes de prod : le board des tickets liés aux miens
+            linked_boards = [b for b in others + team if links.get(b.id)]
+            if [b for b in team if b not in linked_boards]:
+                team = [b for b in team if b not in linked_boards]
+                deploy = linked_boards
+        self.team, self.deploy = team, discovery.rank_deploy(deploy, links)[0]
+        known = {b.id for b in self.team + self.deploy}
         if self.jira.board not in known and (team or deploy):
             self.jira.board = _one_board(self.prompter, "Board de ton équipe", team or deploy)
         if self.jira.deploy_board not in known:
-            candidates = [b for b in deploy if b.id != self.jira.board]
-            self.jira.deploy_board = (
-                _one_board(self.prompter, "Board des mises en preprod/prod", candidates)
-                if candidates
-                else ""
-            )
+            candidates = [b for b in self.deploy if b.id != self.jira.board]
+            ranked, sure = discovery.rank_deploy(candidates, links)
+            if not ranked:
+                self.jira.deploy_board = ""
+            elif sure:
+                self.jira.deploy_board = ranked[0].id
+            else:
+                self.jira.deploy_board = _one_board(
+                    self.prompter, "Board des mises en preprod/prod", ranked
+                )
+
+    def _link_counts(self, boards: list[Board]) -> dict[str, int]:
+        """Par board : combien de tickets d'autres projets liés aux miens il porte."""
+        mine = discovery.cross_linked(self.issues)
+        pairs = [(board, issue) for board in boards for issue in mine]
+
+        def count(pair) -> int:
+            board, issue = pair
+            found = _quiet(lambda: self.tracker.linked_issues(issue.key, board.id), [])
+            return discovery.count_cross(issue, found)
+
+        counts: dict[str, int] = {}
+        for (board, _), n in zip(pairs, _parallel(count, pairs)):
+            counts[board.id] = counts.get(board.id, 0) + n
+        return counts
 
     def _guess_columns(self) -> None:
         dev = self._statuses(self.jira.board)
@@ -237,14 +265,19 @@ class _Discovery:
         self.prompter.explain("Aucun ticket ne pointe vers un GitLab : donne son adresse.")
         self.gitlab.url = _ask_url(self.prompter, "URL GitLab", DEFAULT_GITLAB)
 
+    def _board_columns(self, board: str) -> list[str]:
+        """Colonnes configurées du board (un appel, mis en cache) ; tous les statuts sans board."""
+        if board not in self._config:
+            columns = _quiet(lambda: self.tracker.statuses(board), None) if board else None
+            self._config[board] = columns or _quiet(self.tracker.statuses, [])
+        return self._config[board]
+
     def _statuses(self, board: str) -> list[str]:
         """Colonnes que les tickets du board traversent vraiment, dans l'ordre du flux ; à
-        défaut d'historique, celles du board ; sans board, tous les statuts."""
+        défaut d'historique, celles du board. L'historique n'est lu que pour les boards retenus."""
         if board not in self._columns:
-            columns = _quiet(lambda: self.tracker.statuses(board), None) if board else None
-            columns = columns or _quiet(self.tracker.statuses, [])
             history = _quiet(lambda: self.tracker.board_history(board), []) if board else []
-            self._columns[board] = discovery.flow(history, columns)
+            self._columns[board] = discovery.flow(history, self._board_columns(board))
         return self._columns[board]
 
     # --- questions ---
@@ -285,6 +318,12 @@ def _connect_gitlab(prompter, gitlab: GitLabConfig, store: TokenStore, gitlab_cl
 
 
 # --- briques ---
+
+
+def _parallel(call: Callable, items: list) -> list:
+    """Appels Jira indépendants (un par board…) lancés en même temps : c'est le réseau qui coûte."""
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return list(pool.map(call, items))
 
 
 def _quiet(call: Callable, fallback):
