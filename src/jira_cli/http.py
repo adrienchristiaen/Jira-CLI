@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 
 import requests
 
@@ -18,6 +19,8 @@ class ApiError(RuntimeError):
 
 def jira_session(config: JiraConfig, token: str) -> requests.Session:
     session = _session()
+    if not token:  # anonyme : serverInfo, pour savoir à quel Jira on parle
+        return session
     if config.auth == "basic":
         session.auth = (config.user, token)
     elif config.auth == "bearer":
@@ -71,3 +74,15 @@ def _session() -> requests.Session:
     session = requests.Session()
     session.headers["Accept"] = "application/json"
     return session
+
+
+def timestamp(text: str | None) -> datetime | None:
+    """Date ISO de Jira (+0200) ou de GitLab (Z, +02:00), en UTC ; None si absente."""
+    if not text:
+        return None
+    for layout in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(text, layout).astimezone(timezone.utc)
+        except ValueError:
+            continue
+    return None

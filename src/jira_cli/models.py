@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,38 @@ class Issue:
 class Board:
     id: str
     name: str
+
+
+@dataclass(frozen=True)
+class Stay:
+    """Passage d'un ticket dans une colonne."""
+
+    status: str
+    start: datetime | None = None
+    end: datetime | None = None  # None : le ticket y est encore
+    mover: str = ""  # qui l'en a sorti
+
+
+@dataclass(frozen=True)
+class History:
+    """Vie d'un ticket, colonne par colonne."""
+
+    key: str
+    stays: tuple[Stay, ...]
+    links: tuple[str, ...] = ()  # tickets liés : ceux d'un ticket MEP portent le code
+
+    @property
+    def path(self) -> list[str]:
+        return [stay.status for stay in self.stays]
+
+
+@dataclass(frozen=True)
+class CodeEvent:
+    """Ce qui s'est passé dans GitLab pour un ticket : commit, MR ouverte, MR mergée."""
+
+    kind: str  # commit | mr_opened | mr_merged
+    at: datetime
+    project: str
 
 
 @dataclass(frozen=True)

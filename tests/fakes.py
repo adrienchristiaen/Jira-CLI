@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from jira_cli.models import Board, Issue, MergeRequest, PipelineVariable
+from jira_cli.models import Board, CodeEvent, History, Issue, MergeRequest, PipelineVariable, Stay
 
 MR = MergeRequest(
     project_id=42,
@@ -31,8 +31,13 @@ class FakeTracker:
     linked_by_board: dict[str, list[Issue]] = field(default_factory=dict)  # sinon `linked` partout
     project_boards: dict[str, list[Board]] = field(default_factory=dict)  # sinon all_boards
     links: list[str] = field(default_factory=list)  # liens web / panneau Développement
-    histories: dict[str, list[list[str]]] = field(default_factory=dict)  # parcours par board
+    # Vie des tickets terminés, par board : History, ou juste la liste des colonnes traversées.
+    histories: dict[str, list] = field(default_factory=dict)
     history_boards: list[str] = field(default_factory=list)
+    cloud: bool = False
+
+    def is_cloud(self) -> bool:
+        return self.cloud
 
     def get_issue(self, key: str) -> Issue:
         return self.issue
@@ -60,9 +65,12 @@ class FakeTracker:
             return self.all_boards
         return [b for p in projects for b in self.project_boards.get(p, [])]
 
-    def board_history(self, board: str) -> list[list[str]]:
+    def board_history(self, board: str) -> list[History]:
         self.history_boards.append(board)
-        return self.histories.get(board, [])
+        return [
+            h if isinstance(h, History) else History("", tuple(Stay(s) for s in h))
+            for h in self.histories.get(board, [])
+        ]
 
     def dev_links(self, key: str) -> list[str]:
         return self.links
@@ -91,6 +99,13 @@ class FakeHost:
     commits: list[tuple] = field(default_factory=list)
     created_mrs: list[tuple] = field(default_factory=list)
     branch_names: dict[str, list[str]] = field(default_factory=dict)  # projet -> branches
+    events: dict[str, list[CodeEvent]] = field(default_factory=dict)  # ticket -> commits, MR…
+
+    def whoami(self) -> str:
+        return "me"
+
+    def code_events(self, ticket_key: str) -> list[CodeEvent]:
+        return self.events.get(ticket_key, [])
 
     def find_merge_requests(self, ticket_key: str, include_merged: bool = False):
         return [mr for mr in self.mrs if include_merged or mr.state == "opened"]

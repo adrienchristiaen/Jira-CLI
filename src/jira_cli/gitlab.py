@@ -8,8 +8,8 @@ from urllib.parse import quote
 
 import requests
 
-from .http import check
-from .models import MergeRequest, PipelineVariable
+from .http import check, timestamp
+from .models import CodeEvent, MergeRequest, PipelineVariable
 from .ports import ProjectRef
 
 _CI_VARIABLES_QUERY = """
@@ -46,6 +46,26 @@ class GitLabClient:
             for mr in found
             if key.search(" ".join((mr["title"], mr["source_branch"], mr.get("description") or "")))
         ]
+
+    def code_events(self, ticket_key: str) -> list[CodeEvent]:
+        """Commits, ouvertures et merges des MR qui citent le ticket, dans l'ordre du temps."""
+        key = _key_pattern(ticket_key)
+        found = self._paginate(
+            "/merge_requests", {"scope": "all", "state": "all", "search": ticket_key}
+        )
+        events = []
+        for mr in found:
+            if not key.search(" ".join((mr["title"], mr["source_branch"]))):
+                continue
+            project = mr["references"]["full"].split("!")[0]
+            commits = self._paginate(
+                f"/projects/{mr['project_id']}/merge_requests/{mr['iid']}/commits", {}
+            )
+            events += [CodeEvent("commit", timestamp(c["created_at"]), project) for c in commits]
+            events.append(CodeEvent("mr_opened", timestamp(mr["created_at"]), project))
+            if mr.get("merged_at"):
+                events.append(CodeEvent("mr_merged", timestamp(mr["merged_at"]), project))
+        return sorted((e for e in events if e.at), key=lambda e: e.at)
 
     def branches(self, project: ProjectRef, ticket_key: str) -> list[str]:
         """Branches du projet qui citent le ticket (feat/PROJ-123-…), pas PROJ-1234."""

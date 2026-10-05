@@ -4,7 +4,7 @@ from fakes import MR
 from jira_cli.config import Config, GitLabConfig, JiraConfig, RepoConfig, load, save
 from jira_cli.gitlab import GitLabClient
 from jira_cli.http import ApiError, check, gitlab_session, jira_session
-from jira_cli.jira import JiraClient, parse_url
+from jira_cli.jira import JiraClient
 from jira_cli.models import Board, Issue
 from jira_cli.tokens import TokenStore
 
@@ -292,24 +292,10 @@ def test_jira_search_falls_back_to_cloud_endpoint():
     assert session.calls[-1][2]["params"]["jql"] == "assignee = currentUser()"
 
 
-@pytest.mark.parametrize(
-    "pasted, expected",
-    [
-        (
-            "https://jira.agilefabric.fr.carrefour.com/secure/RapidBoard.jspa?rapidView=4922",
-            ("https://jira.agilefabric.fr.carrefour.com", "4922"),
-        ),
-        ("https://acme.fr/jira/browse/PROJ-1", ("https://acme.fr/jira", "")),
-        ("https://acme.fr/jira", ("https://acme.fr/jira", "")),
-        (
-            "https://acme.atlassian.net/jira/software/projects/P/boards/7",
-            ("https://acme.atlassian.net", "7"),
-        ),
-        ("https://acme.atlassian.net", ("https://acme.atlassian.net", "")),
-    ],
-)
-def test_parse_url_keeps_base_and_board(pasted, expected):
-    assert parse_url(pasted) == expected
+@pytest.mark.parametrize("deployment, cloud", [("Cloud", True), ("DataCenter", False)])
+def test_server_info_says_whether_jira_is_cloud_without_any_token(deployment, cloud):
+    session = FakeSession({"/serverInfo": FakeResponse({"deploymentType": deployment})})
+    assert JiraClient("https://jira", session).is_cloud() is cloud
 
 
 def test_error_summary_is_one_line_for_html_and_json():
@@ -430,26 +416,71 @@ def test_head_pipeline_status_of_a_merge_request():
     assert client.pipeline_status(MR) == ""
 
 
-def test_board_history_is_the_status_path_of_recently_done_tickets():
-    def change(created, before, after):
+def test_board_history_gives_each_stay_in_a_column_and_who_ended_it():
+    def change(created, before, after, who):
         items = [{"field": "status", "fromString": before, "toString": after}]
-        return {"created": created, "items": items + [{"field": "assignee"}]}
+        return {"created": created, "author": {"name": who}, "items": items + [{"field": "x"}]}
 
     issue = {
         "key": "PROJ-1",
+        "fields": {
+            "created": "2026-01-01T09:00:00.000+0200",
+            "issuelinks": [{"outwardIssue": {"key": "MEP-9"}}],
+        },
         "changelog": {
             "histories": [  # pas forcément dans l'ordre
-                change("2026-01-03T10:00:00.000+0200", "En revue", "Fait"),
-                change("2026-01-01T10:00:00.000+0200", "Ouvert", "WIP"),
-                change("2026-01-02T10:00:00.000+0200", "WIP", "En revue"),
+                change("2026-01-03T10:00:00.000+0200", "En revue", "Fait", "lead"),
+                change("2026-01-01T10:00:00.000+0200", "Ouvert", "WIP", "dev"),
+                change("2026-01-02T10:00:00.000+0200", "WIP", "En revue", "dev"),
             ]
         },
     }
     session = FakeSession({"/rest/agile/1.0/board/42/issue": FakeResponse({"issues": [issue]})})
     client = JiraClient("https://jira", session)
-    assert client.board_history("42") == [["Ouvert", "WIP", "En revue", "Fait"]]
+    [history] = client.board_history("42")
+    assert history.key == "PROJ-1"
+    assert history.path == ["Ouvert", "WIP", "En revue", "Fait"]
+    ouvert, wip, _, fait = history.stays
+    assert (ouvert.start.hour, ouvert.end.day, ouvert.mover) == (7, 1, "dev")  # en UTC
+    assert (wip.end.day, wip.mover) == (2, "dev")
+    assert (fait.end, fait.mover) == (None, "")
+    assert history.links == ("MEP-9",)
     params = session.calls[0][2]["params"]
     assert params["expand"] == "changelog" and "statusCategory = Done" in params["jql"]
+
+
+def test_code_events_of_a_ticket_are_its_commits_merge_requests_and_merges():
+    mrs = [
+        {
+            **mr_json(7, "PROJ-1 paiement", "feat/PROJ-1", state="merged"),
+            "project_id": 1,
+            "created_at": "2026-01-02T08:00:00.000Z",
+            "merged_at": "2026-01-05T08:00:00.000Z",
+        },
+        {
+            **mr_json(9, "Kube PROJ-1", "deploy/PROJ-1"),
+            "project_id": 2,
+            "references": {"full": "team/kube!9"},
+            "created_at": "2026-01-04T08:00:00Z",
+            "merged_at": None,
+        },
+        {**mr_json(3, "PROJ-12 autre", "PROJ-12"), "created_at": "2026-01-04T08:00:00Z"},
+    ]
+    commits = [{"created_at": "2026-01-01T10:00:00.000+02:00"}]
+    session = FakeSession(
+        {
+            "/merge_requests/7/commits": FakeResponse(commits),
+            "/merge_requests/9/commits": FakeResponse([]),
+            "/merge_requests": FakeResponse(mrs),
+        }
+    )
+    events = GitLabClient("https://gl", session).code_events("PROJ-1")
+    assert [(e.kind, e.at.day, e.project) for e in events] == [
+        ("commit", 1, "team/app"),
+        ("mr_opened", 2, "team/app"),
+        ("mr_opened", 4, "team/kube"),
+        ("mr_merged", 5, "team/app"),
+    ]
 
 
 def test_status_list_is_read_once_for_several_boards():
