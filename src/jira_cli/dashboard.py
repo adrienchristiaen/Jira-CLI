@@ -22,7 +22,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, OptionList, Static
 from textual.worker import get_current_worker
 
-from . import actions, overview, wizard
+from . import actions, discovery, overview, wizard
 from . import config as config_module
 from .http import ApiError
 from .models import Issue
@@ -364,7 +364,10 @@ def _detail(view: TicketView, environments: list[str]) -> Text:
     text.append(f"{issue.key}", style="bold")
     text.append(f" · {issue.summary}\n")
     text.append("Colonne     ", style="dim")
-    text.append(f"{issue.status} · {stage.description}\n")
+    if intent := discovery.INTENTS.get(view.intent, ""):
+        text.append(f"{issue.status} · {intent} · {stage.description}\n")
+    else:
+        text.append(f"{issue.status} · {stage.description}\n")
     if view.mep:
         text.append("Mise en prod ", style="dim")
         text.append(f"{view.mep.key} ({view.mep.status}) · {view.mep.summary}\n")
@@ -379,6 +382,10 @@ def _detail(view: TicketView, environments: list[str]) -> Text:
         text.append("Pipeline    ", style="dim")
         text.append_text(_pipeline_cell(view.pipeline))
         text.append(f"\n            {view.mr.web_url}\n", style="dim underline")
+    elif view.component:
+        branch = view.component.branch or "branche pas trouvée"
+        text.append("pas encore de MR", style="dim")
+        text.append(f"  {view.component.project} · {branch}\n")
     else:
         text.append("aucune MR ne cite ce ticket\n", style="dim")
     text.append("\n")

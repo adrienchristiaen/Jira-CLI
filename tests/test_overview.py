@@ -63,3 +63,36 @@ def test_gitlab_error_is_shown_not_raised():
 
     view = overview.load(ctx(host=Down()), ISSUE)
     assert "502" in view.error and view.stage.next == Action("deploy", "preprod")
+
+
+# --- WIP : le composant GitLab du ticket, même sans MR ---
+
+
+def test_component_comes_from_the_merge_request():
+    view = overview.load(ctx(), ISSUE)
+    assert view.component == overview.Component(MR.project_path, MR.source_branch)
+
+
+def test_without_merge_request_the_branch_linked_in_jira_is_the_component():
+    jira = FakeTracker(issue=ISSUE, links=["https://gl/team/app/-/tree/feature/PROJ-123-pay"])
+    view = overview.load(ctx(jira, FakeHost(mrs=[])), ISSUE)
+    assert view.component == overview.Component("team/app", "feature/PROJ-123-pay")
+
+
+def test_project_from_a_commit_link_then_branch_searched_in_gitlab():
+    jira = FakeTracker(issue=ISSUE, links=["https://gl/team/app/-/commit/abc123"])
+    host = FakeHost(mrs=[], branch_names={"team/app": ["main", "feat/proj-123"]})
+    view = overview.load(ctx(jira, host), ISSUE)
+    assert view.component == overview.Component("team/app", "feat/proj-123")
+
+
+def test_links_to_another_host_are_not_a_component():
+    jira = FakeTracker(issue=ISSUE, links=["https://confluence/x/-/tree/y"])
+    view = overview.load(ctx(jira, FakeHost(mrs=[])), ISSUE)
+    assert view.component is None
+
+
+def test_view_carries_the_intent_of_the_column():
+    jira = JiraConfig("https://jira", intents={"A Recetter": "check"})
+    view = overview.load(ctx(jira=jira), ISSUE)
+    assert view.intent == "check"

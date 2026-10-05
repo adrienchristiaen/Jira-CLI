@@ -134,3 +134,35 @@ def test_without_review_column_rc_starts_from_the_step_before_after_rc():
     team = ["Cadrage", "Conception", "WIP", "A installer", "A Recetter", "A releaser"]
     discovery.guess_columns(jira, team, [], ENVS)
     assert (jira.rc_from_statuses, jira.status_after_rc) == (["WIP"], "A installer")
+
+
+# --- intention de chaque colonne : ce qu'on y fait, quel que soit son nom ---
+
+
+@pytest.mark.parametrize(
+    "column, intent",
+    [
+        ("WIP", "develop"),
+        ("En cours", "develop"),
+        ("In Progress", "develop"),
+        ("En revue", "review"),
+        ("Code Review", "review"),
+        ("A installer", "install"),
+        ("A Recetter", "check"),
+        ("Recette en cours", "acceptance"),
+        ("A releaser", "release"),
+        ("A installer preprod", "deploy"),
+        ("En prod", "deploy"),
+        ("Livré", "done"),
+        ("Backlog", ""),
+        ("A faire", ""),
+    ],
+)
+def test_intent_is_deduced_from_the_column_name(column, intent):
+    assert discovery.intent(column) == intent
+
+
+def test_guess_intents_fills_only_unknown_columns():
+    jira = JiraConfig("https://jira", intents={"WIP": "review"})
+    discovery.guess_intents(jira, ["WIP", "A installer", "Backlog"])
+    assert jira.intents == {"WIP": "review", "A installer": "install"}

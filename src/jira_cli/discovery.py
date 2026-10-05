@@ -140,6 +140,43 @@ def _guess_env(statuses: list[str], env: str) -> str:
     )
 
 
+# --- intention de chaque colonne : ce qu'on y fait, une liste fixe quel que soit le board ---
+
+INTENTS = {
+    "develop": "Développer",
+    "review": "Relire la MR",
+    "install": "Installer en recette",
+    "check": "Vérifier technique",
+    "acceptance": "Recette métier",
+    "release": "Releaser",
+    "deploy": "Déployer preprod/prod",
+    "done": "Terminé",
+}
+# Du plus précis au plus vague : « A installer preprod » est un déploiement, pas une recette.
+_INTENT_NAMES = [
+    ("deploy", re.compile(r"\b(pr[eé]-?)?prod|\bmep\b", re.IGNORECASE)),
+    ("review", _REVIEW),
+    ("release", re.compile(r"releas|stable", re.IGNORECASE)),
+    ("install", re.compile(r"install|d[eé]ploy", re.IGNORECASE)),
+    ("acceptance", re.compile(r"recette (en cours|m[eé]tier)|uat|m[eé]tier", re.IGNORECASE)),
+    ("check", re.compile(r"recett|qualif|test|v[eé]rif", re.IGNORECASE)),
+    ("done", _DONE),
+    ("develop", re.compile(r"wip|en cours|progress|d[eé]v", re.IGNORECASE)),
+]
+
+
+def intent(column: str) -> str:
+    """Intention d'après le nom de la colonne ; vide si le nom ne dit rien (Backlog, A faire)."""
+    return next((key for key, pattern in _INTENT_NAMES if pattern.search(column)), "")
+
+
+def guess_intents(jira: JiraConfig, columns: Iterable[str]) -> None:
+    """Remplit l'intention des colonnes qui n'en ont pas ; ne touche jamais à une valeur réglée."""
+    for column in columns:
+        if column not in jira.intents and (guessed := intent(column)):
+            jira.intents[column] = guessed
+
+
 # --- rôle de chaque colonne : ce que l'init montre et fait corriger, board par board ---
 
 _LABELS = {

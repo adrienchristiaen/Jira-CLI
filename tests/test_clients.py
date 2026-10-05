@@ -463,3 +463,12 @@ def test_status_list_is_read_once_for_several_boards():
     client = JiraClient("https://jira", session)
     assert client.statuses("1") == client.statuses("2") == ["MR"]
     assert sum("/rest/api/2/status" in url for _, url, _ in session.calls) == 1
+
+
+def test_branches_matching_a_ticket_key():
+    session = FakeSession(
+        {"/repository/branches": FakeResponse([{"name": "feat/proj-123"}, {"name": "PROJ-1234"}])}
+    )
+    branches = GitLabClient("https://gl", session).branches("team/app", "PROJ-123")
+    assert branches == ["feat/proj-123"]
+    assert "team%2Fapp" in session.calls[0][1]

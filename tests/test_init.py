@@ -117,10 +117,11 @@ def test_summary_shows_each_board_with_its_columns_and_their_role():
 
 def test_role_not_found_opens_the_columns_of_that_board():
     statuses = {"4922": ["Backlog", "Fait", "En revue"], "77": DEPLOY}  # rien après la revue
-    answers = ["https://jira.acme.fr", "pat", "Fait", "Après la RC", None, None, "gl"]
+    answers = ["https://jira.acme.fr", "pat", "Fait", None, "Après la RC", None, None, "gl"]
     prompter, config = init(answers, tracker(board_statuses=statuses))
-    assert questions(prompter)[2:6] == [
+    assert questions(prompter)[2:7] == [
         "Colonne à corriger · Squad Paiement",
+        "À quoi sert « Fait » ?",
         "Rôle de « Fait »",
         "Colonne à corriger · Squad Paiement",
         "Tout est juste ?",
@@ -139,7 +140,7 @@ def test_saying_no_to_the_summary_lets_you_change_boards_and_gitlab():
 
 def test_correcting_the_team_board_offers_only_team_roles():
     answers = ["https://jira.acme.fr", "pat", False, None, None]
-    answers += ["En cours", "MR prête pour une RC", None]  # board de l'équipe
+    answers += ["En cours", None, "MR prête pour une RC", None]  # board de l'équipe
     answers += [None, None, "gl"]  # board des mises en prod, URL GitLab, token
     prompter, config = init(answers)
     roles = dict(prompter.offered)["Rôle de « En cours »"]
@@ -149,7 +150,7 @@ def test_correcting_the_team_board_offers_only_team_roles():
 
 def test_correcting_the_deploy_board_offers_no_rc_role():
     answers = ["https://jira.acme.fr", "pat", False, None, None, None]
-    answers += ["En preprod", "Après la release finale", None]  # board des mises en prod
+    answers += ["En preprod", None, "Après la release finale", None]  # board des mises en prod
     answers += [None, "gl"]
     prompter, config = init(answers)
     roles = dict(prompter.offered)["Rôle de « En preprod »"]
@@ -250,3 +251,21 @@ def test_history_is_read_only_for_the_chosen_boards():
     )
     init(["https://jira.acme.fr", "pat", None, "gl"], jira)
     assert sorted(set(jira.history_boards)) == ["4922", "77"]
+
+
+def test_summary_shows_what_each_used_column_is_for():
+    prompter, config = init(["https://jira.acme.fr", "pat", None, "gl"])
+    summary = next(m for m in prompter.messages if "Squad Paiement" in m)
+    assert "Développer" in summary and "Vérifier technique" in summary
+    assert config.jira.intents["En cours"] == "develop"
+    assert config.jira.intents["En preprod"] == "deploy"
+    assert config_module.load().jira.intents["A Recetter"] == "check"
+
+
+def test_correcting_a_column_asks_what_it_is_for_first():
+    answers = ["https://jira.acme.fr", "pat", False, None, None]
+    answers += ["A faire", "Développer", None, None]  # board de l'équipe
+    answers += [None, None, "gl"]
+    prompter, config = init(answers)
+    assert "À quoi sert « A faire » ?" in questions(prompter)
+    assert config.jira.intents["A faire"] == "develop"

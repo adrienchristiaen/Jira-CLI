@@ -73,3 +73,19 @@ def test_actions_menu_offers_every_action_recommended_first():
 def test_detail_panel_describes_the_selected_ticket():
     _, detail, _ = drive(["down"])
     assert "PROJ-2" in detail and "Remboursements" in detail and "Déploiement preprod" in detail
+
+
+def test_detail_shows_the_column_intent_and_the_component_without_mr():
+    from jira_cli.dashboard import _detail
+    from jira_cli.overview import Component, TicketView
+    from jira_cli.stages import Stage
+
+    view = TicketView(
+        Issue("PROJ-1", "Paiements", "WIP"),
+        Stage("en dev", None),
+        component=Component("team/app", "feat/PROJ-1"),
+        intent="develop",
+    )
+    text = _detail(view, []).plain
+    assert "Développer" in text
+    assert "team/app · feat/PROJ-1" in text and "pas encore de MR" in text

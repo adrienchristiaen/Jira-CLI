@@ -25,6 +25,7 @@ from .tokens import TokenStore
 NONE = "(ne pas changer la colonne du ticket)"
 DONE = "✓ C'est bon"
 NO_ROLE = "Aucun rôle"
+NO_INTENT = "Rien de particulier"
 SAME_BOARD = "Le même board"
 NETWORK_ERRORS = (ApiError, requests.RequestException)
 DEFAULT_GITLAB = "https://gitlab.com"
@@ -160,7 +161,7 @@ class _Discovery:
         if (self.jira.board, self.jira.deploy_board) != before:  # autres boards : on re-déduit
             self.jira.rc_from_statuses, self.jira.status_after_rc = [], ""
             self.jira.status_after_deploy, self.jira.final_from_statuses = {}, []
-            self.jira.status_after_final = ""
+            self.jira.status_after_final, self.jira.intents = "", {}
             self._guess_columns()
         for board, fields in self._boards():
             self._correct_columns(board, fields)
@@ -171,8 +172,7 @@ class _Discovery:
         for title, (board, fields) in zip(("Board de l'équipe", "Mises en prod"), self._boards()):
             lines.append(f"  {title} : {self._name(board)}")
             for column in self._statuses(board):
-                if role := discovery.role_of(self.jira, column, fields):
-                    lines.append(f"    {column:<24} {discovery.label(role)}")
+                lines.append(f"    {column:<24} {self._column(column, fields)}")
             missing = [f for f in discovery.missing(self.jira, self.environments) if f in fields]
             if missing:
                 lines.append("    pas trouvé : " + ", ".join(discovery.label(f) for f in missing))
@@ -253,6 +253,7 @@ class _Discovery:
         dev = self._statuses(self.jira.board)
         deploy = self._statuses(self.jira.deploy_board) if self.jira.deploy_board else dev
         discovery.guess_columns(self.jira, dev, deploy, self.environments)
+        discovery.guess_intents(self.jira, dev + deploy)
 
     def _find_gitlab(self) -> None:
         if self.gitlab.url:
@@ -282,21 +283,36 @@ class _Discovery:
 
     # --- questions ---
 
+    def _correct_intent(self, column: str) -> None:
+        intents = list(discovery.INTENTS)
+        current = self.jira.intents.get(column, "")
+        default = intents.index(current) if current in intents else len(intents)
+        choice = self.prompter.choose(
+            f"À quoi sert « {column} » ?", [*discovery.INTENTS.values(), NO_INTENT], default
+        )
+        if choice < len(intents):
+            self.jira.intents[column] = intents[choice]
+        else:
+            self.jira.intents.pop(column, None)
+
+    def _column(self, column: str, fields: list[str]) -> str:
+        """« Vérifier technique · Après la RC » : l'intention de la colonne, puis son rôle."""
+        intent = discovery.INTENTS.get(self.jira.intents.get(column, ""), "?")
+        role = discovery.role_of(self.jira, column, fields)
+        return intent + (f" · {discovery.label(role)}" if role else "")
+
     def _correct_columns(self, board: str, fields: list[str]) -> None:
         """Choisir une colonne, puis son rôle ; jusqu'à « C'est bon »."""
         columns = self._statuses(board)
         while True:
-            items = [
-                f"{c}  → "
-                + (discovery.label(r) if (r := discovery.role_of(self.jira, c, fields)) else "—")
-                for c in columns
-            ]
+            items = [f"{c}  → {self._column(c, fields)}" for c in columns]
             index = self.prompter.choose(
                 f"Colonne à corriger · {self._name(board)}", [*items, DONE], len(items)
             )
             if index == len(items):
                 return
             column = columns[index]
+            self._correct_intent(column)
             roles = [discovery.label(f) for f in fields] + [NO_ROLE]
             current = discovery.role_of(self.jira, column, fields)
             default = fields.index(current) if current else len(fields)

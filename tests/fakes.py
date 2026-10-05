@@ -90,12 +90,17 @@ class FakeHost:
     open_mrs: dict[str, str] = field(default_factory=dict)  # branche source -> URL
     commits: list[tuple] = field(default_factory=list)
     created_mrs: list[tuple] = field(default_factory=list)
+    branch_names: dict[str, list[str]] = field(default_factory=dict)  # projet -> branches
 
     def find_merge_requests(self, ticket_key: str, include_merged: bool = False):
         return [mr for mr in self.mrs if include_merged or mr.state == "opened"]
 
     def merge_status(self, mr: MergeRequest) -> str:
         return self.mergeable
+
+    def branches(self, project, ticket_key: str) -> list[str]:
+        key = ticket_key.lower()
+        return [b for b in self.branch_names.get(project, []) if key in b.lower()]
 
     def pipeline_status(self, mr: MergeRequest) -> str:
         return self.pipeline
