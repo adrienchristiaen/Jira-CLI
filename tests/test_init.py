@@ -216,3 +216,37 @@ def test_only_columns_tickets_really_go_through_are_shown():
     menu = dict(prompter.offered)["Colonne à corriger · Squad Paiement"]
     assert [item.split("  →")[0] for item in menu[:-1]] == ["WIP", "En revue", "A Recetter", "Fait"]
     assert config.jira.status_after_rc == "A Recetter"  # pas « A qualifier », jamais traversée
+
+
+def test_among_deploy_boards_the_one_holding_my_linked_tickets_wins():
+    issue = Issue("PROJ-123", "Paiements", "En cours", links=("MEP-9", "INC-1"))
+    boards = [
+        Board("4922", "Squad Paiement"),
+        Board("5", "INCO"),
+        Board("78", "Copy of Phenix Deployments (MEP/CAB)"),
+        Board("77", "Phenix Deployments (MEP/CAB)"),
+    ]
+    jira = tracker(
+        issue=issue,
+        all_boards=boards,
+        board_statuses={"4922": DEV, "5": DEV, "77": DEPLOY, "78": DEPLOY},
+        linked_by_board={
+            "77": [Issue("MEP-9", "MEP", "En preprod")],
+            "5": [Issue("INC-1", "x", "Ouvert")],
+        },
+    )
+    prompter, config = init(["https://jira.acme.fr", "pat", "Squad Paiement", None, "gl"], jira)
+    assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
+    assert "Board des mises en preprod/prod" not in questions(prompter)
+
+
+def test_history_is_read_only_for_the_chosen_boards():
+    boards = [Board("4922", "Squad Paiement"), Board("77", "MEP"), Board("78", "MEP bis")]
+    jira = tracker(
+        all_boards=boards,
+        board_statuses={"4922": DEV, "77": DEPLOY, "78": DEPLOY},
+        linked_by_board={"77": [Issue("MEP-9", "MEP", "En preprod")]},
+        issue=Issue("PROJ-123", "Paiements", "En cours", links=("MEP-9",)),
+    )
+    init(["https://jira.acme.fr", "pat", None, "gl"], jira)
+    assert sorted(set(jira.history_boards)) == ["4922", "77"]

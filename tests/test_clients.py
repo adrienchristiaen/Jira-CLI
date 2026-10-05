@@ -450,3 +450,16 @@ def test_board_history_is_the_status_path_of_recently_done_tickets():
     assert client.board_history("42") == [["Ouvert", "WIP", "En revue", "Fait"]]
     params = session.calls[0][2]["params"]
     assert params["expand"] == "changelog" and "statusCategory = Done" in params["jql"]
+
+
+def test_status_list_is_read_once_for_several_boards():
+    columns = {"columnConfig": {"columns": [{"statuses": [{"id": "1"}]}]}}
+    session = FakeSession(
+        {
+            "/configuration": FakeResponse(columns),
+            "/rest/api/2/status": FakeResponse([{"id": "1", "name": "MR"}]),
+        }
+    )
+    client = JiraClient("https://jira", session)
+    assert client.statuses("1") == client.statuses("2") == ["MR"]
+    assert sum("/rest/api/2/status" in url for _, url, _ in session.calls) == 1
