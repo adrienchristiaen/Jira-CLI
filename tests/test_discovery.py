@@ -127,3 +127,10 @@ def test_after_rc_name_match_must_come_after_review():
     team = ["A qualifier", "WIP", "En revue", "A Recetter", "Fait"]  # « A qualifier » = en amont
     discovery.guess_columns(jira, team, [], ENVS)
     assert jira.status_after_rc == "A Recetter"
+
+
+def test_without_review_column_rc_starts_from_the_step_before_after_rc():
+    jira = JiraConfig("https://jira")
+    team = ["Cadrage", "Conception", "WIP", "A installer", "A Recetter", "A releaser"]
+    discovery.guess_columns(jira, team, [], ENVS)
+    assert (jira.rc_from_statuses, jira.status_after_rc) == (["WIP"], "A installer")

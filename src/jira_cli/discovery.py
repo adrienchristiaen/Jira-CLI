@@ -60,6 +60,8 @@ def guess_columns(
     """Remplit les colonnes vides d'après leur nom ; ne touche jamais à une valeur réglée."""
     jira.rc_from_statuses = jira.rc_from_statuses or [c for c in dev if _REVIEW.search(c)]
     jira.status_after_rc = jira.status_after_rc or _after_rc(dev)
+    if not jira.rc_from_statuses and jira.status_after_rc in dev[1:]:  # pas de colonne de revue :
+        jira.rc_from_statuses = [dev[dev.index(jira.status_after_rc) - 1]]  # l'étape d'avant
     for env in environments:
         if not jira.status_after_deploy.get(env) and (guessed := _guess_env(deploy, env)):
             jira.status_after_deploy[env] = guessed
