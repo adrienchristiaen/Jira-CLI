@@ -92,7 +92,7 @@ class JiraClient:
         """Tickets du board ; parmi `keys` seulement si donné. Un seul appel, sans les tickets."""
         params: dict = {"maxResults": 0, "fields": "key"}
         if keys is not None:
-            params["jql"] = f"key in ({','.join(keys)})"
+            params |= {"jql": f"key in ({','.join(keys)})", "validateQuery": "false"}
         url = f"{self._agile}/board/{board}/issue"
         return check(self._session.get(url, params=params)).json()["total"]
 

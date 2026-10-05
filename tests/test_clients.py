@@ -513,3 +513,10 @@ def test_board_issue_count_among_given_keys_or_in_total():
     assert session.calls[0][2]["params"]["maxResults"] == 0
     assert client.board_issue_count("42") == 3
     assert "jql" not in session.calls[1][2]["params"]
+
+
+def test_board_issue_count_ignores_keys_jira_does_not_know():
+    # Un ticket lié supprimé ou invisible ne doit pas faire échouer tout le comptage.
+    session = FakeSession({"/board/42/issue": FakeResponse({"total": 1, "issues": []})})
+    JiraClient("https://jira", session).board_issue_count("42", ["MEP-1", "GONE-9"])
+    assert session.calls[0][2]["params"]["validateQuery"] == "false"
