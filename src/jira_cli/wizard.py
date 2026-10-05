@@ -19,7 +19,7 @@ from .config import Config, GitLabConfig, JiraConfig, RepoConfig
 from .gitlab import GitLabClient
 from .http import ApiError, gitlab_session, jira_session
 from .jira import JiraClient, is_cloud, parse_url
-from .models import Board, Issue
+from .models import Board, History, Issue
 from .tokens import TokenStore
 
 NONE = "(ne pas changer la colonne du ticket)"
@@ -58,11 +58,14 @@ def run_init(
     prompter.info("\nCe que j'ai trouvé")
     found = _Discovery(prompter, jira, gitlab, tracker, environments)
     found.run()
+    found.learn(_connect_gitlab(prompter, gitlab, store, gitlab_client))
+    found.ask_missing()
     prompter.info(found.summary())
     if not prompter.confirm("Tout est juste ?", True):
+        url = gitlab.url
         found.correct()
-
-    _connect_gitlab(prompter, gitlab, store, gitlab_client)
+        if gitlab.url != url:
+            _connect_gitlab(prompter, gitlab, store, gitlab_client)
     config = Config(jira=jira, gitlab=gitlab, repos=repos)
     path = config_module.save(config)
     prompter.success(f"Configuration écrite dans {path} (tokens chiffrés à côté).")
@@ -127,11 +130,29 @@ class _Discovery:
         self.gitlab_source = ""
         self._columns: dict[str, list[str]] = {}  # flux des boards retenus
         self._config: dict[str, list[str]] = {}  # colonnes configurées de chaque board
+        self._histories: dict[str, list[History]] = {}  # vie des derniers tickets terminés
+        self._host = None  # GitLab, pour apprendre ce qu'on fait dans chaque colonne
 
     def run(self) -> None:
         self.issues = _quiet(lambda: self.tracker.search(self.jira.jql), [])
         self._find_boards()
         self._guess_columns()
+        self._find_gitlab()
+
+    def learn(self, host) -> None:
+        """Intention de chaque colonne, apprise de ce que GitLab a vu pendant que les derniers
+        tickets terminés y étaient. Réapprise à chaque init : les faits ont pu changer."""
+        self._host = host
+        histories = [
+            h for board in dict.fromkeys(b for b, _ in self._boards()) for h in self._history(board)
+        ]
+        keys = list(dict.fromkeys(h.key for h in histories if h.key))
+        self.prompter.explain(f"Ce qui s'est passé dans GitLab pour {len(keys)} tickets terminés…")
+        events = _parallel(lambda key: _quiet(lambda: host.code_events(key), []), keys)
+        for column, intent in discovery.learn_intents(histories, dict(zip(keys, events))).items():
+            self.jira.intents[column] = intent
+
+    def ask_missing(self) -> None:
         for board, fields in self._boards():
             if missing := [
                 f for f in discovery.missing(self.jira, self.environments) if f in fields
@@ -141,7 +162,6 @@ class _Discovery:
                     + ", ".join(discovery.label(f) for f in missing)
                 )
                 self._correct_columns(board, fields)
-        self._find_gitlab()
 
     def correct(self) -> None:
         before = (self.jira.board, self.jira.deploy_board)
@@ -163,6 +183,8 @@ class _Discovery:
             self.jira.status_after_deploy, self.jira.final_from_statuses = {}, []
             self.jira.status_after_final, self.jira.intents = "", {}
             self._guess_columns()
+            if self._host:
+                self.learn(self._host)
         for board, fields in self._boards():
             self._correct_columns(board, fields)
         self.gitlab.url = _ask_url(self.prompter, "URL GitLab", self.gitlab.url)
@@ -253,7 +275,6 @@ class _Discovery:
         dev = self._statuses(self.jira.board)
         deploy = self._statuses(self.jira.deploy_board) if self.jira.deploy_board else dev
         discovery.guess_columns(self.jira, dev, deploy, self.environments)
-        discovery.guess_intents(self.jira, dev + deploy)
 
     def _find_gitlab(self) -> None:
         if self.gitlab.url:
@@ -277,9 +298,16 @@ class _Discovery:
         """Colonnes que les tickets du board traversent vraiment, dans l'ordre du flux ; à
         défaut d'historique, celles du board. L'historique n'est lu que pour les boards retenus."""
         if board not in self._columns:
-            history = _quiet(lambda: self.tracker.board_history(board), []) if board else []
-            self._columns[board] = discovery.flow(history, self._board_columns(board))
+            paths = [h.path for h in self._history(board)]
+            self._columns[board] = discovery.flow(paths, self._board_columns(board))
         return self._columns[board]
+
+    def _history(self, board: str) -> list[History]:
+        if board not in self._histories:
+            self._histories[board] = (
+                _quiet(lambda: self.tracker.board_history(board), []) if board else []
+            )
+        return self._histories[board]
 
     # --- questions ---
 
@@ -321,15 +349,16 @@ class _Discovery:
             discovery.assign(self.jira, column, field, columns, self.environments)
 
 
-def _connect_gitlab(prompter, gitlab: GitLabConfig, store: TokenStore, gitlab_client) -> None:
+def _connect_gitlab(prompter, gitlab: GitLabConfig, store: TokenStore, gitlab_client):
     prompter.explain(
         f"Token GitLab (scope « api ») : {gitlab.url}/-/user_settings/personal_access_tokens"
     )
     while True:
         token = _ask_token(prompter, "Token GitLab", store.get("gitlab"))
-        if _check(prompter, "GitLab", gitlab_client(gitlab, token).whoami):
+        host = gitlab_client(gitlab, token)
+        if _check(prompter, "GitLab", host.whoami):
             store.set("gitlab", token)
-            return
+            return host
         gitlab.url = _ask_url(prompter, "URL GitLab", gitlab.url)
 
 

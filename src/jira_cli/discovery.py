@@ -5,11 +5,13 @@ adresse du GitLab. Fonctions pures : l'init s'en sert, puis ne pose que les ques
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable
+from datetime import datetime
 from urllib.parse import urlsplit
 
 from .config import JiraConfig
-from .models import Board, Issue
+from .models import Board, CodeEvent, History, Issue, Stay
 
 # Noms de board qui parlent de mise en production (« MEP », « Preprod / Prod », « Déploiements »).
 _DEPLOY_BOARD = re.compile(
@@ -152,30 +154,56 @@ INTENTS = {
     "deploy": "Déployer preprod/prod",
     "done": "Terminé",
 }
-# Du plus précis au plus vague : une vérification prime sur l'environnement (« PREPROD
-# VALIDATION » se vérifie), l'environnement sur l'installation (« A installer preprod » déploie).
-_INTENT_NAMES = [
-    ("acceptance", re.compile(r"recette (en cours|m[eé]tier)|uat|m[eé]tier|validation", re.I)),
-    ("check", re.compile(r"recett|qualif|test|v[eé]rif", re.IGNORECASE)),
-    ("deploy", re.compile(r"\b(pr[eé]-?)?prod|\bmep\b", re.IGNORECASE)),
-    ("review", _REVIEW),
-    ("release", re.compile(r"releas|stable", re.IGNORECASE)),
-    ("install", re.compile(r"install|d[eé]ploy", re.IGNORECASE)),
-    ("done", _DONE),
-    ("develop", re.compile(r"wip|en cours|progress|d[eé]v", re.IGNORECASE)),
-]
 
 
-def intent(column: str) -> str:
-    """Intention d'après le nom de la colonne ; vide si le nom ne dit rien (Backlog, A faire)."""
-    return next((key for key, pattern in _INTENT_NAMES if pattern.search(column)), "")
+def learn_intents(
+    histories: Iterable[History], events: dict[str, list[CodeEvent]]
+) -> dict[str, str]:
+    """Intention de chaque colonne d'après ce qui se passe pendant que les tickets y sont,
+    jamais d'après son nom : la plus fréquente sur les tickets terminés l'emporte."""
+    votes: dict[str, Counter] = {}
+    for history in histories:
+        for status, intent in _stay_intents(history, events.get(history.key, [])):
+            votes.setdefault(status, Counter())[intent] += 1
+    learnt = {status: counter.most_common(1)[0][0] for status, counter in votes.items()}
+    return {status: intent for status, intent in learnt.items() if intent}
 
 
-def guess_intents(jira: JiraConfig, columns: Iterable[str]) -> None:
-    """Remplit l'intention des colonnes qui n'en ont pas ; ne touche jamais à une valeur réglée."""
-    for column in columns:
-        if column not in jira.intents and (guessed := intent(column)):
-            jira.intents[column] = guessed
+def _stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, str]]:
+    """(colonne, intention) pour chaque passage du ticket ; vide quand rien ne parle.
+
+    La MR du code mergée : on release. Une MR dans un autre projet : la première installe,
+    les suivantes déploient. Des commits : on développe. Rien dans GitLab : relecture si la
+    MR vient d'être ouverte, sinon le développeur vérifie ou quelqu'un d'autre recette.
+    """
+    opened = [e.at for e in events if e.kind == "mr_opened"]
+    code = min(events, key=lambda e: e.at).project if events else ""  # le dev commence là
+    developer, installed, reviewed, found = "", False, False, []
+    for stay in history.stays:
+        inside = [e for e in events if _during(e.at, stay)]
+        kinds = {e.kind for e in inside if e.project == code}
+        if stay.end is None:
+            intent = "done"
+        elif "mr_merged" in kinds:
+            intent = "release"  # même si les MR preprod/prod partent dans la foulée
+        elif any(e.project != code for e in inside):
+            intent, installed = ("deploy" if installed else "install"), True
+        elif "commit" in kinds:
+            intent, developer = "develop", stay.mover
+        elif not developer:
+            intent = ""  # avant tout développement : backlog, cadrage…
+        elif not reviewed and any(at <= stay.start for at in opened):
+            intent, reviewed = "review", True
+        else:
+            intent = "check" if stay.mover == developer else "acceptance"
+        found.append((stay.status, intent))
+    return found
+
+
+def _during(moment: datetime, stay: Stay) -> bool:
+    return (
+        stay.start is not None and stay.start <= moment and (stay.end is None or moment < stay.end)
+    )
 
 
 # --- rôle de chaque colonne : ce que l'init montre et fait corriger, board par board ---

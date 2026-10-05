@@ -1,10 +1,12 @@
 """Tout ce qui se déduit de Jira sans rien demander : rôle des boards, colonnes, GitLab."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from jira_cli import discovery
 from jira_cli.config import JiraConfig
-from jira_cli.models import Board, Issue
+from jira_cli.models import Board, CodeEvent, History, Issue, Stay
 
 ENVS = ["preprod", "prod"]
 DEV = ["A faire", "En cours", "En revue", "A Recetter", "En prod", "Fait"]
@@ -136,35 +138,65 @@ def test_without_review_column_rc_starts_from_the_step_before_after_rc():
     assert (jira.rc_from_statuses, jira.status_after_rc) == (["WIP"], "A installer")
 
 
-# --- intention de chaque colonne : ce qu'on y fait, quel que soit son nom ---
+# --- intention de chaque colonne : déduite de ce qui s'y passe, jamais de son nom ---
+
+T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-@pytest.mark.parametrize(
-    "column, intent",
-    [
-        ("WIP", "develop"),
-        ("En cours", "develop"),
-        ("In Progress", "develop"),
-        ("En revue", "review"),
-        ("Code Review", "review"),
-        ("A installer", "install"),
-        ("A Recetter", "check"),
-        ("Recette en cours", "acceptance"),
-        ("A releaser", "release"),
-        ("A installer preprod", "deploy"),
-        ("En prod", "deploy"),
-        ("PREPROD VALIDATION", "acceptance"),
-        ("Recette preprod", "check"),
-        ("Livré", "done"),
-        ("Backlog", ""),
-        ("A faire", ""),
-    ],
-)
-def test_intent_is_deduced_from_the_column_name(column, intent):
-    assert discovery.intent(column) == intent
+def at(hours: float) -> datetime:
+    return T0 + timedelta(hours=hours)
 
 
-def test_guess_intents_fills_only_unknown_columns():
-    jira = JiraConfig("https://jira", intents={"WIP": "review"})
-    discovery.guess_intents(jira, ["WIP", "A installer", "Backlog"])
-    assert jira.intents == {"WIP": "review", "A installer": "install"}
+def ticket(key: str, *stays: tuple) -> History:
+    """stays : (colonne, entrée, sortie ou None, qui l'en sort)."""
+    return History(
+        key, tuple(Stay(s, at(a), at(b) if b is not None else None, m) for s, a, b, m in stays)
+    )
+
+
+# Noms opaques exprès : seule la vie des tickets compte.
+FLOW = [("C1", 0, 1, "dev"), ("C2", 1, 3, "dev"), ("C3", 3, 4, "lead"), ("C4", 4, 5, "dev")]
+FLOW += [("C5", 5, 6, "dev"), ("C6", 6, 7, "po"), ("C7", 7, 8, "dev"), ("C8", 8, None, "")]
+EVENTS = [
+    CodeEvent("commit", at(2), "team/app"),
+    CodeEvent("mr_opened", at(2.5), "team/app"),
+    CodeEvent("mr_opened", at(4.5), "team/kube"),  # installation en recette
+    CodeEvent("mr_merged", at(7.2), "team/app"),  # release
+    CodeEvent("mr_opened", at(7.5), "team/kube"),  # MR preprod/prod
+]
+
+
+def test_intent_comes_from_what_happens_while_tickets_sit_in_the_column():
+    intents = discovery.learn_intents([ticket("P-1", *FLOW)], {"P-1": EVENTS})
+    assert intents == {
+        "C2": "develop",  # des commits
+        "C3": "review",  # MR ouverte, plus de commit
+        "C4": "install",  # première MR dans un autre projet
+        "C5": "check",  # rien dans GitLab, le développeur fait avancer
+        "C6": "acceptance",  # rien dans GitLab, quelqu'un d'autre fait avancer
+        "C7": "release",  # MR du code mergée
+        "C8": "done",  # les tickets terminés y restent
+    }  # C1 : avant tout commit, aucune intention
+
+
+def test_later_merge_requests_in_another_project_are_deployments():
+    flow = [("A", 0, 1, "dev"), ("B", 1, 2, "dev"), ("C", 2, 3, "dev"), ("D", 3, None, "")]
+    events = [
+        CodeEvent("commit", at(0.5), "team/app"),
+        CodeEvent("mr_opened", at(1.5), "team/kube"),
+        CodeEvent("mr_merged", at(2.5), "team/kube"),
+    ]
+    intents = discovery.learn_intents([ticket("P-1", *flow)], {"P-1": events})
+    assert (intents["B"], intents["C"]) == ("install", "deploy")
+
+
+def test_the_most_frequent_intent_wins_across_tickets():
+    with_commit = [CodeEvent("commit", at(0.5), "team/app")]
+    tickets = [ticket(f"P-{n}", ("X", 0, 1, "dev"), ("Y", 1, None, "")) for n in range(3)]
+    events = {"P-0": with_commit, "P-1": with_commit, "P-2": []}
+    assert discovery.learn_intents(tickets, events)["X"] == "develop"
+
+
+def test_without_any_gitlab_activity_nothing_is_guessed():
+    intents = discovery.learn_intents([ticket("P-1", ("X", 0, 1, "a"), ("Y", 1, None, ""))], {})
+    assert intents == {"Y": "done"}

@@ -7,8 +7,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import requests
 
-from .http import ApiError, check
-from .models import Board, Issue
+from .http import ApiError, check, timestamp
+from .models import Board, History, Issue, Stay
 
 # Début du chemin des pages de Jira : ce qui précède est l'adresse de base (+ context path).
 _UI_PATHS = re.compile(r"/(secure|browse|projects|issues|plugins|rest|login\.jsp)(/|$)")
@@ -111,17 +111,17 @@ class JiraClient:
                     break
         return list(found.values())
 
-    def board_history(self, board: str, limit: int = 30) -> list[list[str]]:
-        """Parcours (statuts successifs) des derniers tickets terminés du board."""
+    def board_history(self, board: str, limit: int = 30) -> list[History]:
+        """Vie des derniers tickets terminés du board : chaque colonne, quand, et qui l'en sort."""
         params = {
             "jql": "statusCategory = Done ORDER BY updated DESC",
-            "fields": "status",
+            "fields": "status,created",
             "expand": "changelog",
             "maxResults": limit,
         }
         url = f"{self._agile}/board/{board}/issue"
         issues = check(self._session.get(url, params=params)).json()["issues"]
-        return [path for issue in issues if (path := _path(issue))]
+        return [history for issue in issues if (history := _history(issue)).stays]
 
     def statuses(self, board: str = "") -> list[str]:
         """Noms des statuts, pour proposer les colonnes du board à l'init.
@@ -174,7 +174,17 @@ def _issue(data: dict) -> Issue:
     return Issue(data["key"], fields["summary"], fields["status"]["name"], links)
 
 
-def _path(issue: dict) -> list[str]:
+def _history(issue: dict) -> History:
     histories = sorted(issue.get("changelog", {}).get("histories", []), key=lambda h: h["created"])
-    changes = [i for h in histories for i in h["items"] if i.get("field") == "status"]
-    return [changes[0]["fromString"], *(c["toString"] for c in changes)] if changes else []
+    changes = [(h, i) for h in histories for i in h["items"] if i.get("field") == "status"]
+    if not changes:
+        return History(issue.get("key", ""), ())
+    start = timestamp((issue.get("fields") or {}).get("created", ""))
+    stays = []
+    for history, item in changes:
+        end, author = timestamp(history["created"]), history.get("author") or {}
+        who = author.get("accountId") or author.get("name") or author.get("displayName", "")
+        stays.append(Stay(item["fromString"], start, end, who))
+        start = end
+    stays.append(Stay(changes[-1][1]["toString"], start))
+    return History(issue.get("key", ""), tuple(stays))
