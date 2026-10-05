@@ -85,3 +85,45 @@ def test_boards_split_team_and_deploy_with_ambiguity_left_open():
     team, deploy = discovery.split_boards(boards, lambda b: columns[b], ENVS)
     assert [b.id for b in team] == ["1", "2"]
     assert [b.id for b in deploy] == ["77"]
+
+
+# --- colonnes réellement utilisées, d'après le parcours des tickets terminés ---
+
+PATHS = [
+    ["Ouvert", "WIP", "En revue", "A Recetter", "Fait"],
+    ["Ouvert", "WIP", "En revue", "WIP", "En revue", "A Recetter", "Fait"],
+    ["Ouvert", "WIP", "En revue", "A Recetter", "Fait"],
+    ["Ouvert", "WIP", "En revue", "A Recetter", "Fait"],
+    ["Ouvert", "Annulée"],
+]
+
+
+def test_flow_keeps_statuses_tickets_go_through_in_their_order():
+    columns = [
+        "Conception",
+        "Fait",
+        "A Recetter",
+        "Ouvert",
+        "En revue",
+        "WIP",
+        "Annulée",
+        "Cadrage",
+    ]
+    assert discovery.flow(PATHS, columns) == ["Ouvert", "WIP", "En revue", "A Recetter", "Fait"]
+
+
+def test_flow_without_history_is_the_board_columns():
+    assert discovery.flow([], ["A", "B"]) == ["A", "B"]
+
+
+def test_after_rc_is_the_step_following_review_when_no_name_matches():
+    jira = JiraConfig("https://jira")
+    discovery.guess_columns(jira, ["Ouvert", "WIP", "En revue", "Validation", "Fait"], [], ENVS)
+    assert jira.status_after_rc == "Validation"
+
+
+def test_after_rc_name_match_must_come_after_review():
+    jira = JiraConfig("https://jira")
+    team = ["A qualifier", "WIP", "En revue", "A Recetter", "Fait"]  # « A qualifier » = en amont
+    discovery.guess_columns(jira, team, [], ENVS)
+    assert jira.status_after_rc == "A Recetter"

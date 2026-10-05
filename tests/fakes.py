@@ -31,6 +31,7 @@ class FakeTracker:
     linked_by_board: dict[str, list[Issue]] = field(default_factory=dict)  # sinon `linked` partout
     project_boards: dict[str, list[Board]] = field(default_factory=dict)  # sinon all_boards
     links: list[str] = field(default_factory=list)  # liens web / panneau Développement
+    histories: dict[str, list[list[str]]] = field(default_factory=dict)  # parcours par board
 
     def get_issue(self, key: str) -> Issue:
         return self.issue
@@ -57,6 +58,9 @@ class FakeTracker:
         if not self.project_boards:
             return self.all_boards
         return [b for p in projects for b in self.project_boards.get(p, [])]
+
+    def board_history(self, board: str) -> list[list[str]]:
+        return self.histories.get(board, [])
 
     def dev_links(self, key: str) -> list[str]:
         return self.links

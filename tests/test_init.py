@@ -116,7 +116,7 @@ def test_summary_shows_each_board_with_its_columns_and_their_role():
 
 
 def test_role_not_found_opens_the_columns_of_that_board():
-    statuses = {"4922": ["Backlog", "En revue", "Fait"], "77": DEPLOY}
+    statuses = {"4922": ["Backlog", "Fait", "En revue"], "77": DEPLOY}  # rien après la revue
     answers = ["https://jira.acme.fr", "pat", "Fait", "Après la RC", None, None, "gl"]
     prompter, config = init(answers, tracker(board_statuses=statuses))
     assert questions(prompter)[2:6] == [
@@ -205,3 +205,14 @@ def test_deploy_board_is_the_board_holding_tickets_linked_to_mine():
     prompter, config = init(answers, jira)
     assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
     assert "Board des mises en preprod/prod" not in questions(prompter)
+
+
+def test_only_columns_tickets_really_go_through_are_shown():
+    columns = ["Conception", "A qualifier", "WIP", "En revue", "A Recetter", "Fait", "Annulée"]
+    history = [["WIP", "En revue", "A Recetter", "Fait"]] * 3
+    jira = tracker(board_statuses={"4922": columns, "77": DEPLOY}, histories={"4922": history})
+    answers = ["https://jira.acme.fr", "pat", False, None, None, None, None, None, "gl"]
+    prompter, config = init(answers, jira)
+    menu = dict(prompter.offered)["Colonne à corriger · Squad Paiement"]
+    assert [item.split("  →")[0] for item in menu[:-1]] == ["WIP", "En revue", "A Recetter", "Fait"]
+    assert config.jira.status_after_rc == "A Recetter"  # pas « A qualifier », jamais traversée
