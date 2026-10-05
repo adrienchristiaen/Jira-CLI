@@ -8,6 +8,7 @@ demandé, puis tout se corrige d'un « non » au résumé. Relancer l'init repar
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -38,10 +39,22 @@ def _gitlab_client(gitlab: GitLabConfig, token: str) -> GitLabClient:
     return GitLabClient(gitlab.url, gitlab_session(gitlab, token))
 
 
+def _git_remotes() -> list[str]:
+    """URL des remotes du repo git où l'on lance la commande ; aucune hors d'un repo."""
+    try:
+        out = subprocess.run(
+            ["git", "remote", "-v"], capture_output=True, text=True, check=False, timeout=5
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.split()[1] for line in out.splitlines() if len(line.split()) > 1]
+
+
 def run_init(
     prompter,
     jira_client: Callable = _jira_client,
     gitlab_client: Callable = _gitlab_client,
+    remotes: Callable = _git_remotes,
 ) -> Config:
     current = _current()
     store = TokenStore(config_module.home())
@@ -55,7 +68,7 @@ def run_init(
     gitlab = current.gitlab if current else GitLabConfig(url="")
 
     prompter.info("\nCe que j'ai trouvé")
-    found = _Discovery(prompter, jira, gitlab, tracker, environments)
+    found = _Discovery(prompter, jira, gitlab, tracker, environments, remotes)
     found.run()
     found.learn(_connect_gitlab(prompter, gitlab, found.code_hosts, store, gitlab_client))
     found.ask_missing()
@@ -125,9 +138,12 @@ def _jira_hint(status: int | None) -> str:
 class _Discovery:
     """Boards, colonnes et GitLab déduits ; questions seulement pour l'ambigu ou l'introuvable."""
 
-    def __init__(self, prompter, jira: JiraConfig, gitlab: GitLabConfig, tracker, environments):
+    def __init__(
+        self, prompter, jira: JiraConfig, gitlab: GitLabConfig, tracker, environments, remotes
+    ):
         self.prompter, self.jira, self.gitlab = prompter, jira, gitlab
-        self.tracker, self.environments = tracker, environments
+        self.tracker, self.environments, self._remotes = tracker, environments, remotes
+        self._evidence: dict[str, str] = {}  # board -> ce qui a guidé son choix
         self.issues: list[Issue] = []
         self.team: list[Board] = []
         self.deploy: list[Board] = []
@@ -208,7 +224,9 @@ class _Discovery:
     def summary(self) -> str:
         lines = []
         for title, (board, fields) in zip(("Board de l'équipe", "Mises en prod"), self._boards()):
-            lines.append(f"  {title} : {self._name(board)}")
+            lines.append(
+                f"  {title} : {_with_evidence(self._name(board), self._evidence.get(board, ''))}"
+            )
             for column in self._statuses(board):
                 lines.append(f"    {column:<24} {self._column(column, fields)}")
             missing = [f for f in discovery.missing(self.jira, self.environments) if f in fields]
@@ -250,13 +268,20 @@ class _Discovery:
         )
         links = self._link_counts(mine + others)
         # L'équipe : le board qui porte mes tickets, même s'il porte aussi des tickets liés.
-        team, sure = discovery.rank_team(mine, self._held(mine))
+        held = self._held(mine)
+        self._evidence = {
+            b.id: _evidence(held.get(b.id), links.get(b.id, 0), len(self.issues))
+            for b in mine + others
+        }
+        team, sure = discovery.rank_team(mine, held)
         self.team = team
         self.deploy = discovery.rank_deploy([b for b in mine + others if links.get(b.id)], links)[0]
         known = {b.id for b in self.team + self.deploy}
         if self.jira.board not in known and team:
             self.jira.board = (
-                team[0].id if sure else _one_board(self.prompter, "Board de ton équipe", team)
+                team[0].id
+                if sure
+                else _one_board(self.prompter, "Board de ton équipe", team, self._evidence)
             )
         if self.jira.deploy_board not in known:
             candidates = [b for b in self.deploy if b.id != self.jira.board]
@@ -267,7 +292,7 @@ class _Discovery:
                 self.jira.deploy_board = ranked[0].id
             else:
                 self.jira.deploy_board = _one_board(
-                    self.prompter, "Board des mises en preprod/prod", ranked
+                    self.prompter, "Board des mises en preprod/prod", ranked, self._evidence
                 )
 
     def _held(self, boards: list[Board]) -> dict[str, tuple[int, int]]:
@@ -311,6 +336,9 @@ class _Discovery:
             [i.key for i in self.issues[:5]],
         )
         self.code_hosts = discovery.code_hosts([u for found in links for u in found], self.jira.url)
+        # Le repo git où l'on lance la commande pointe aussi vers le GitLab.
+        local = discovery.remote_hosts(self._remotes())
+        self.code_hosts += [h for h in local if h not in self.code_hosts]
         for issue, found in zip(self.issues, links):
             for host in self.code_hosts:
                 if any(u.startswith(host + "/") for u in found):
@@ -416,10 +444,25 @@ def _quiet(call: Callable, fallback):
         return fallback
 
 
-def _one_board(prompter, question: str, boards: list[Board]) -> str:
+def _one_board(prompter, question: str, boards: list[Board], evidence: dict[str, str]) -> str:
     if len(boards) == 1:
         return boards[0].id
-    return boards[prompter.choose(question, [b.name for b in boards], 0)].id
+    items = [_with_evidence(b.name, evidence.get(b.id, "")) for b in boards]
+    return boards[prompter.choose(question, items, 0)].id
+
+
+def _with_evidence(name: str, evidence: str) -> str:
+    return f"{name}  ({evidence})" if evidence else name
+
+
+def _evidence(held: tuple[int, int] | None, links: int, mine: int) -> str:
+    """« 3 de tes 4 tickets · 120 tickets · 2 tickets liés » : ce qui a guidé le choix."""
+    parts = []
+    if held:
+        parts += [f"{held[0]} de tes {mine} tickets", f"{held[1]} tickets"]
+    if links:
+        parts.append(f"{links} tickets liés aux tiens")
+    return " · ".join(parts)
 
 
 def _choose_board(

@@ -76,11 +76,11 @@ def tracker(**overrides) -> FakeTracker:
     return FakeTracker(**{**values, **overrides})
 
 
-def init(answers, jira=None, gitlab=None):
+def init(answers, jira=None, gitlab=None, remotes=()):
     prompter = ScriptedPrompter(answers)
     jira = jira or tracker()
     host = gitlab or FakeHost(events=EVENTS)
-    config = wizard.run_init(prompter, lambda c, t: jira, lambda c, t: host)
+    config = wizard.run_init(prompter, lambda c, t: jira, lambda c, t: host, lambda: list(remotes))
     return prompter, config
 
 
@@ -348,10 +348,8 @@ def test_deploy_board_is_asked_when_two_boards_hold_my_linked_tickets_equally():
     answers = ["https://jira.acme.fr", "pat", "Phenix Deployments (MEP/CAB)"]
     prompter, config = init([*answers, "gl", None], jira)
     assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
-    assert dict(prompter.offered)["Board des mises en preprod/prod"] == [
-        "INCO",
-        "Phenix Deployments (MEP/CAB)",
-    ]  # aucun nom ne départage : on demande
+    offered = dict(prompter.offered)["Board des mises en preprod/prod"]
+    assert [o.split("  (")[0] for o in offered] == ["INCO", "Phenix Deployments (MEP/CAB)"]
 
 
 def test_history_is_read_only_for_the_chosen_boards():
@@ -419,3 +417,24 @@ def test_rerun_relearns_intents_from_the_facts(home):
     events = {"PROJ-1": [CodeEvent("commit", at(1), "team/app")]}
     init([], tracker(histories={"4922": [life]}), FakeHost(events=events))
     assert config_module.load().jira.intents["En cours"] == "develop"
+
+
+def test_gitlab_comes_from_the_git_remote_of_the_current_repo_when_tickets_say_nothing():
+    remotes = ["git@git.acme.fr:team/app.git"]
+    prompter, config = init(
+        ["https://jira.acme.fr", "pat", "gl", None], tracker(links=[]), remotes=remotes
+    )
+    assert "URL GitLab" not in questions(prompter)
+    assert config.gitlab.url == "https://git.acme.fr"
+
+
+def test_board_choices_show_the_evidence_behind_them():
+    boards = [Board("1", "Squad A"), Board("4922", "Squad Paiement"), Board("77", "MEP")]
+    same = {"1": ["PROJ-123", "PROJ-9"], "4922": ["PROJ-123", "PROJ-8"]}
+    jira = tracker(all_boards=boards, board_tickets=same)
+    prompter, _ = init(["https://jira.acme.fr", "pat", "Squad Paiement", "gl", None], jira)
+    items = dict(prompter.offered)["Board de ton équipe"]
+    assert items[0].startswith("Squad A") and "1 de tes 1 tickets" in items[0]
+    assert "2 tickets" in items[0]
+    summary = next(m for m in prompter.messages if "Board de l'équipe" in m)
+    assert "Squad Paiement" in summary and "1 de tes 1 tickets" in summary

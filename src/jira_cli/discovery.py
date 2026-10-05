@@ -85,6 +85,19 @@ def code_hosts(links: Iterable[str], jira_url: str) -> list[str]:
     return [host for host, _ in hosts.most_common()]
 
 
+def remote_hosts(remotes: Iterable[str]) -> list[str]:
+    """Hôtes des remotes git (https, ssh ou git@hôte:chemin), sans doublon."""
+    hosts = []
+    for remote in remotes:
+        if "://" in remote:
+            host = urlsplit(remote).hostname or ""
+        else:  # git@hôte:groupe/projet.git
+            host = remote.split("@", 1)[-1].split(":", 1)[0]
+        if host:
+            hosts.append(f"https://{host}")
+    return list(dict.fromkeys(hosts))
+
+
 def base_candidates(url: str) -> list[str]:
     """Adresses de base possibles d'une URL collée depuis le navigateur, de l'hôte seul au
     chemin complet : la première où Jira répond est la bonne (context path compris)."""

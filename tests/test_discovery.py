@@ -188,3 +188,12 @@ def test_deductions_read_no_keyword():
     import inspect
 
     assert "re.compile" not in inspect.getsource(discovery)
+
+
+def test_git_remotes_give_their_host():
+    remotes = [
+        "git@git.acme.fr:team/app.git",
+        "https://git.acme.fr/a/b.git",
+        "ssh://git@other.fr:2222/x.git",
+    ]
+    assert discovery.remote_hosts(remotes) == ["https://git.acme.fr", "https://other.fr"]
