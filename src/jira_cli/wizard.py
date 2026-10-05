@@ -155,6 +155,12 @@ class _Discovery:
         self._sources: dict[str, str] = {}  # hôte -> ticket qui y renvoie
 
     def run(self) -> None:
+        # Tout ce qui se déduit est re-déduit : une ancienne déduction fausse ne doit pas
+        # survivre. La correction finale reste là pour reprendre la main.
+        j = self.jira
+        j.board = j.deploy_board = j.status_after_rc = j.status_after_final = ""
+        j.rc_from_statuses, j.final_from_statuses = [], []
+        j.status_after_deploy, j.intents = {}, {}
         self.issues = _quiet(lambda: self.tracker.search(self.jira.jql), [])
         self._find_boards()
         self._find_code_hosts()
@@ -257,43 +263,56 @@ class _Discovery:
     # --- déductions ---
 
     def _find_boards(self) -> None:
-        """Board de l'équipe : celui des projets de mes tickets. Board des mises en prod : celui
-        qui porte le plus de tickets d'autres projets liés aux miens. Aucun nom n'est lu."""
-        own, linked = discovery.projects(self.issues)
+        """Board de l'équipe : celui qui porte le plus de mes tickets. Board des mises en prod :
+        celui qui porte le plus de tickets d'autres projets liés aux miens, en cours ou terminés
+        (un ticket en cours n'a souvent pas encore de ticket MEP). Aucun nom n'est lu."""
+        own, _ = discovery.projects(self.issues)
         mine = _quiet(lambda: self.tracker.boards(own), []) if own else []
-        others = (
-            [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in mine]
-            if linked
-            else []
-        )
-        links = self._link_counts(mine + others)
-        # L'équipe : le board qui porte mes tickets, même s'il porte aussi des tickets liés.
         held = self._held(mine)
-        self._evidence = {
-            b.id: _evidence(held.get(b.id), links.get(b.id, 0), len(self.issues))
-            for b in mine + others
-        }
         team, sure = discovery.rank_team(mine, held)
         self.team = team
-        self.deploy = discovery.rank_deploy([b for b in mine + others if links.get(b.id)], links)[0]
-        known = {b.id for b in self.team + self.deploy}
-        if self.jira.board not in known and team:
+        if team:
             self.jira.board = (
                 team[0].id
                 if sure
-                else _one_board(self.prompter, "Board de ton équipe", team, self._evidence)
-            )
-        if self.jira.deploy_board not in known:
-            candidates = [b for b in self.deploy if b.id != self.jira.board]
-            ranked, sure = discovery.rank_deploy(candidates, links)
-            if not ranked:
-                self.jira.deploy_board = ""
-            elif sure:
-                self.jira.deploy_board = ranked[0].id
-            else:
-                self.jira.deploy_board = _one_board(
-                    self.prompter, "Board des mises en preprod/prod", ranked, self._evidence
+                else _one_board(
+                    self.prompter, "Board de ton équipe", team, self._team_evidence(held)
                 )
+            )
+        done = self._history(self.jira.board)
+        keys = discovery.foreign_links(
+            [(i.key, i.links) for i in self.issues] + [(h.key, h.links) for h in done]
+        )
+        linked, _ = discovery.projects(Issue(k, "", "") for k in keys)
+        others = [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in mine]
+        others = others if linked else []
+        candidates = [b for b in mine + others if b.id != self.jira.board] if keys else []
+        links = dict(
+            zip(
+                (b.id for b in candidates),
+                _parallel(
+                    lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id, keys), 0),
+                    candidates,
+                ),
+            )
+        )
+        self._evidence = self._team_evidence(held) | {
+            b.id: _evidence(held.get(b.id), links.get(b.id, 0), len(self.issues))
+            for b in candidates
+        }
+        ranked, sure = discovery.rank_deploy([b for b in candidates if links[b.id]], links)
+        self.deploy = ranked
+        if not ranked:
+            self.jira.deploy_board = ""
+        elif sure:
+            self.jira.deploy_board = ranked[0].id
+        else:
+            self.jira.deploy_board = _one_board(
+                self.prompter, "Board des mises en preprod/prod", ranked, self._evidence
+            )
+
+    def _team_evidence(self, held: dict[str, tuple[int, int]]) -> dict[str, str]:
+        return {b: _evidence(h, 0, len(self.issues)) for b, h in held.items()}
 
     def _held(self, boards: list[Board]) -> dict[str, tuple[int, int]]:
         """Par board : (combien de mes tickets il porte, combien de tickets en tout)."""
@@ -305,21 +324,6 @@ class _Discovery:
         )
         total = _parallel(lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id), 0), boards)
         return {b.id: (m, t) for b, m, t in zip(boards, mine, total)}
-
-    def _link_counts(self, boards: list[Board]) -> dict[str, int]:
-        """Par board : combien de tickets d'autres projets liés aux miens il porte."""
-        mine = discovery.cross_linked(self.issues)
-        pairs = [(board, issue) for board in boards for issue in mine]
-
-        def count(pair) -> int:
-            board, issue = pair
-            found = _quiet(lambda: self.tracker.linked_issues(issue.key, board.id), [])
-            return discovery.count_cross(issue, found)
-
-        counts: dict[str, int] = {}
-        for (board, _), n in zip(pairs, _parallel(count, pairs)):
-            counts[board.id] = counts.get(board.id, 0) + n
-        return counts
 
     def _guess_columns(self) -> None:
         dev = self._statuses(self.jira.board)

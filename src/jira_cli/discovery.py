@@ -239,14 +239,10 @@ def assign(
     jira.final_from_statuses = [s for s in last if s]
 
 
-def cross_linked(issues: Iterable[Issue]) -> list[Issue]:
-    """Mes tickets liés à un ticket d'un autre projet (ticket MEP…), les plus récents."""
-    return [i for i in issues if any(_project(k) != _project(i.key) for k in i.links)][:3]
-
-
-def count_cross(issue: Issue, found: Iterable[Issue]) -> int:
-    """Tickets d'un autre projet que `issue`, parmi ceux trouvés liés à lui sur un board."""
-    return sum(_project(o.key) != _project(issue.key) for o in found)
+def foreign_links(tickets: Iterable[tuple[str, Iterable[str]]]) -> list[str]:
+    """Tickets d'un autre projet liés à ces (clé, liens) : tickets MEP, CAB…"""
+    found = [k for key, links in tickets for k in links if _project(k) != _project(key)]
+    return list(dict.fromkeys(found))
 
 
 def rank_team(boards: list[Board], held: dict[str, tuple[int, int]]) -> tuple[list[Board], bool]:

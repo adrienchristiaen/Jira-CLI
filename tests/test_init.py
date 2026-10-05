@@ -37,7 +37,7 @@ def life(key, *stays, links=()):
 
 
 # Ce qu'ont vécu les derniers tickets terminés : c'est d'eux que tout se déduit.
-TEAM_LIFE = life(
+TEAM_LIFE_STAYS = (
     "PROJ-1",
     ("A faire", 0, 1, "dev"),
     ("En cours", 1, 3, "dev"),  # commits
@@ -45,6 +45,7 @@ TEAM_LIFE = life(
     ("A Recetter", 4, 5, "po"),  # plus rien, quelqu'un d'autre fait avancer
     ("Fait", 5, None, ""),
 )
+TEAM_LIFE = life(*TEAM_LIFE_STAYS)
 MEP_LIFE = life(
     "MEP-1",
     ("A installer preprod", 10, 11, "ops"),
@@ -164,7 +165,7 @@ def test_among_boards_holding_my_tickets_the_most_specific_wins():
 
 def test_several_team_boards_are_one_short_question():
     boards = [Board("1", "Squad A"), Board("4922", "Squad Paiement"), Board("77", "MEP")]
-    same = {"1": ["PROJ-123"], "4922": ["PROJ-123"]}  # rien ne les départage
+    same = {"1": ["PROJ-123"], "4922": ["PROJ-123"], "77": ["MEP-9"]}  # rien ne les départage
     jira = tracker(all_boards=boards, board_tickets=same)
     prompter, config = init(["https://jira.acme.fr", "pat", "Squad Paiement", "gl", None], jira)
     assert "Board de ton équipe" in questions(prompter)
@@ -259,7 +260,7 @@ def test_correcting_the_deploy_board_offers_no_rc_role():
     assert config.jira.final_from_statuses == ["En prod"]
 
 
-def test_rerun_keeps_values_tokens_and_repos(home):
+def test_rerun_keeps_tokens_and_repos(home):
     jira = JiraConfig(
         "https://jira.acme.fr", board="4922", deploy_board="77", status_after_rc="Fait"
     )
@@ -272,7 +273,8 @@ def test_rerun_keeps_values_tokens_and_repos(home):
     TokenStore(home).set("gitlab", "old-g")
     init([])
     saved = config_module.load()
-    assert saved.jira.status_after_rc == "Fait" and saved.gitlab.url == "https://gl.acme.fr"
+    assert saved.jira.status_after_rc == "A Recetter"  # re-déduit des faits
+    assert saved.gitlab.url == "https://gl.acme.fr"
     assert saved.repos["team/app"].tag_format == "x"
     assert saved.repos["default"].deploy.project == "team/kube"
     assert TokenStore(home).get("jira") == "old-j" and TokenStore(home).get("gitlab") == "old-g"
@@ -298,7 +300,7 @@ def test_deploy_board_is_the_board_holding_tickets_linked_to_mine():
         issue=issue,
         all_boards=boards,
         board_statuses={"4922": DEV, "5": DEV, "77": ops},
-        linked_by_board={"77": [Issue("OPS-9", "MEP paiements", "CAB")]},
+        board_tickets={"4922": ["PROJ-123"], "77": ["OPS-9"]},
     )
     answers = ["https://jira.acme.fr", "pat", "gl"]
     answers += [None, None]  # colonnes MEP pas trouvées : liste ouverte puis « C'est bon »
@@ -340,10 +342,7 @@ def test_deploy_board_is_asked_when_two_boards_hold_my_linked_tickets_equally():
         issue=issue,
         all_boards=boards,
         board_statuses={"4922": DEV, "5": DEV, "77": DEPLOY, "78": DEPLOY},
-        linked_by_board={
-            "77": [Issue("MEP-9", "MEP", "En preprod")],
-            "5": [Issue("INC-1", "x", "Ouvert")],
-        },
+        board_tickets={"4922": ["PROJ-123"], "77": ["MEP-9"], "5": ["INC-1"]},
     )
     answers = ["https://jira.acme.fr", "pat", "Phenix Deployments (MEP/CAB)"]
     prompter, config = init([*answers, "gl", None], jira)
@@ -438,3 +437,26 @@ def test_board_choices_show_the_evidence_behind_them():
     assert "2 tickets" in items[0]
     summary = next(m for m in prompter.messages if "Board de l'équipe" in m)
     assert "Squad Paiement" in summary and "1 de tes 1 tickets" in summary
+
+
+def test_rerun_deduces_boards_again_instead_of_keeping_old_ones(home):
+    old = JiraConfig("https://jira.acme.fr", board="1", deploy_board="4922", status_after_rc="X")
+    config_module.save(Config(old, GitLabConfig("https://gitlab.acme.fr"), {}))
+    TokenStore(home).set("jira", "j")
+    TokenStore(home).set("gitlab", "g")
+    boards = [Board("1", "Use case"), Board("4922", "PHENIX"), Board("77", "Phenix Deployments")]
+    _, config = init([], tracker(all_boards=boards))
+    assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
+    assert config.jira.status_after_rc == "A Recetter"  # rôle re-déduit, pas l'ancien
+
+
+def test_deploy_board_is_found_through_links_of_done_tickets():
+    team_life = life(*TEAM_LIFE_STAYS, links=("MEP-1",))
+    jira = tracker(
+        issue=Issue("PROJ-123", "Paiements", "En cours"),  # pas encore de ticket MEP
+        histories={"4922": [team_life], "77": [MEP_LIFE]},
+        board_tickets={"4922": ["PROJ-123"], "77": ["MEP-1"]},
+    )
+    prompter, config = init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
+    assert "Board des mises en preprod/prod" not in questions(prompter)
