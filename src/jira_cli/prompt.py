@@ -75,9 +75,11 @@ class ConsolePrompter:
 
     def choose(self, question: str, items: Sequence[str], default: int = 0) -> int:
         choices = [questionary.Choice(item, value=index) for index, item in enumerate(items)]
-        return questionary.select(
+        answer = questionary.select(
             question, choices, default=choices[default], instruction=ARROWS, style=STYLE
         ).unsafe_ask()
+        # Certains terminaux font renvoyer le libellé au lieu de la valeur : on revient à l'index.
+        return answer if isinstance(answer, int) else list(items).index(answer)
 
     def choose_many(
         self, question: str, items: Sequence[str], checked: Sequence[int] = ()
