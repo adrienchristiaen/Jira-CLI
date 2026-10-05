@@ -236,6 +236,23 @@ def count_cross(issue: Issue, found: Iterable[Issue]) -> int:
     return sum(_project(o.key) != _project(issue.key) for o in found)
 
 
+def rank_team(boards: list[Board], held: dict[str, tuple[int, int]]) -> tuple[list[Board], bool]:
+    """Boards de l'équipe : celui qui porte le plus de mes tickets en tête, à égalité le plus
+    petit (le plus spécifique) ; `held` = {board: (mes tickets, tickets en tout)}. Et si le
+    premier s'impose : il porte au moins un de mes tickets et bat strictement le suivant."""
+
+    def score(board: Board) -> tuple[int, int]:
+        mine, total = held.get(board.id, (0, 0))
+        return -mine, total
+
+    ranked = sorted(boards, key=score)
+    first = held.get(ranked[0].id, (0, 0))[0] if ranked else 0
+    sure = len(ranked) == 1 or (
+        len(ranked) > 1 and first > 0 and score(ranked[0]) < score(ranked[1])
+    )
+    return ranked, sure
+
+
 def rank_deploy(candidates: list[Board], links: dict[str, int]) -> tuple[list[Board], bool]:
     """Boards de mises en prod, celui qui porte le plus de tickets liés aux miens en tête ;
     et si ce premier s'impose (seul, ou strictement plus de liens que le suivant)."""

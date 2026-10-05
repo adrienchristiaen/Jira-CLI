@@ -69,6 +69,7 @@ def tracker(**overrides) -> FakeTracker:
         "all_boards": [Board("4922", "Squad Paiement"), Board("77", "Phenix Deployments")],
         "board_statuses": {"4922": DEV, "77": DEPLOY, "1": DEV},
         "linked_by_board": {"77": [Issue("MEP-9", "MEP", "En preprod")]},
+        "board_tickets": {"4922": ["PROJ-123"], "77": ["MEP-9"]},
         "histories": {"4922": [TEAM_LIFE], "77": [MEP_LIFE]},
         "links": [MR_LINK],
     }
@@ -125,11 +126,47 @@ def test_gitlab_url_is_asked_only_when_no_ticket_links_to_it():
     assert config.gitlab.url == "https://git.acme.fr"
 
 
+def test_team_board_is_the_one_holding_my_tickets():
+    boards = [Board(str(n), f"Board {n}") for n in range(1, 13)] + [
+        Board("4922", "PHENIX - PFD Client"),
+        Board("77", "Phenix Deployments"),
+    ]
+    tickets = {"4922": ["PROJ-123"], "77": ["MEP-9"], **{str(n): ["PROJ-1"] for n in range(1, 13)}}
+    jira = tracker(all_boards=boards, board_tickets=tickets)
+    prompter, config = init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    assert "Board de ton équipe" not in questions(prompter)
+    assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
+
+
+def test_team_board_holding_tickets_linked_to_mine_is_still_the_team_board():
+    boards = [Board("1", "Autre"), Board("4922", "PHENIX"), Board("77", "Phenix Deployments")]
+    jira = tracker(
+        all_boards=boards,
+        board_tickets={"4922": ["PROJ-123"], "77": ["MEP-9"]},
+        linked_by_board={
+            "4922": [Issue("BUG-1", "bug lié", "Ouvert")],  # un ticket lié d'un autre projet
+            "77": [Issue("MEP-9", "MEP", "En preprod"), Issue("MEP-8", "MEP", "Livré")],
+        },
+    )
+    prompter, config = init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
+    assert "Board de ton équipe" not in questions(prompter)
+
+
+def test_among_boards_holding_my_tickets_the_most_specific_wins():
+    boards = [Board("1", "Tout le projet"), Board("4922", "Squad Paiement"), Board("77", "MEP")]
+    whole = ["PROJ-123", *(f"PROJ-{n}" for n in range(500))]
+    jira = tracker(all_boards=boards, board_tickets={"1": whole, "4922": ["PROJ-123"]})
+    prompter, config = init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    assert "Board de ton équipe" not in questions(prompter)
+    assert config.jira.board == "4922"
+
+
 def test_several_team_boards_are_one_short_question():
     boards = [Board("1", "Squad A"), Board("4922", "Squad Paiement"), Board("77", "MEP")]
-    prompter, config = init(
-        ["https://jira.acme.fr", "pat", "Squad Paiement", "gl", None], tracker(all_boards=boards)
-    )
+    same = {"1": ["PROJ-123"], "4922": ["PROJ-123"]}  # rien ne les départage
+    jira = tracker(all_boards=boards, board_tickets=same)
+    prompter, config = init(["https://jira.acme.fr", "pat", "Squad Paiement", "gl", None], jira)
     assert "Board de ton équipe" in questions(prompter)
     assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
 
@@ -263,7 +300,7 @@ def test_deploy_board_is_the_board_holding_tickets_linked_to_mine():
         board_statuses={"4922": DEV, "5": DEV, "77": ops},
         linked_by_board={"77": [Issue("OPS-9", "MEP paiements", "CAB")]},
     )
-    answers = ["https://jira.acme.fr", "pat", "Squad Paiement", "gl"]
+    answers = ["https://jira.acme.fr", "pat", "gl"]
     answers += [None, None]  # colonnes MEP pas trouvées : liste ouverte puis « C'est bon »
     prompter, config = init(answers, jira)
     assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
@@ -308,7 +345,7 @@ def test_deploy_board_is_asked_when_two_boards_hold_my_linked_tickets_equally():
             "5": [Issue("INC-1", "x", "Ouvert")],
         },
     )
-    answers = ["https://jira.acme.fr", "pat", "Squad Paiement", "Phenix Deployments (MEP/CAB)"]
+    answers = ["https://jira.acme.fr", "pat", "Phenix Deployments (MEP/CAB)"]
     prompter, config = init([*answers, "gl", None], jira)
     assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
     assert dict(prompter.offered)["Board des mises en preprod/prod"] == [
@@ -325,7 +362,7 @@ def test_history_is_read_only_for_the_chosen_boards():
         linked_by_board={"77": [Issue("MEP-9", "MEP", "En preprod")]},
         issue=Issue("PROJ-123", "Paiements", "En cours", links=("MEP-9",)),
     )
-    init(["https://jira.acme.fr", "pat", "Squad Paiement", "gl", None], jira)
+    init(["https://jira.acme.fr", "pat", "gl", None], jira)
     assert sorted(set(jira.history_boards)) == ["4922", "77"]
 
 

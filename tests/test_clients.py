@@ -503,3 +503,13 @@ def test_branches_matching_a_ticket_key():
     branches = GitLabClient("https://gl", session).branches("team/app", "PROJ-123")
     assert branches == ["feat/proj-123"]
     assert "team%2Fapp" in session.calls[0][1]
+
+
+def test_board_issue_count_among_given_keys_or_in_total():
+    session = FakeSession({"/board/42/issue": FakeResponse({"total": 3, "issues": []})})
+    client = JiraClient("https://jira", session)
+    assert client.board_issue_count("42", ["P-1", "P-2"]) == 3
+    assert session.calls[0][2]["params"]["jql"] == "key in (P-1,P-2)"
+    assert session.calls[0][2]["params"]["maxResults"] == 0
+    assert client.board_issue_count("42") == 3
+    assert "jql" not in session.calls[1][2]["params"]
