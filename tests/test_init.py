@@ -104,23 +104,59 @@ def test_without_deploy_board_everything_happens_on_the_team_board():
     assert config.jira.status_after_deploy["prod"] == "En prod"
 
 
-def test_only_columns_that_cannot_be_guessed_are_asked():
+def test_summary_shows_each_board_with_its_columns_and_their_role():
+    prompter, _ = init(["https://jira.acme.fr", "pat", None, "gl"])
+    summary = next(m for m in prompter.messages if "Squad Paiement" in m)
+    team, deploy = summary.split("MEP Preprod / Prod")
+    assert "En revue" in team and "MR prête pour une RC" in team
+    assert "A Recetter" in team and "Après la RC" in team
+    assert "En preprod" in deploy and "Après déploiement preprod" in deploy
+    assert "Livré" in deploy and "Après la release finale" in deploy
+    assert "RC" not in deploy  # pas de RC sur le board des mises en prod
+
+
+def test_role_not_found_opens_the_columns_of_that_board():
     statuses = {"4922": ["Backlog", "En revue", "Fait"], "77": DEPLOY}
-    prompter, config = init(
-        ["https://jira.acme.fr", "pat", "Fait", None, "gl"], tracker(board_statuses=statuses)
-    )
-    assert questions(prompter)[2:4] == ["Colonne après lancement de la RC", "Tout est juste ?"]
+    answers = ["https://jira.acme.fr", "pat", "Fait", "Après la RC", None, None, "gl"]
+    prompter, config = init(answers, tracker(board_statuses=statuses))
+    assert questions(prompter)[2:6] == [
+        "Colonne à corriger · Squad Paiement",
+        "Rôle de « Fait »",
+        "Colonne à corriger · Squad Paiement",
+        "Tout est juste ?",
+    ]
+    assert any("Après la RC" in m for m in prompter.messages if "pas trouvé" in m)
     assert config.jira.status_after_rc == "Fait"
 
 
-def test_saying_no_to_the_summary_lets_you_correct_each_value():
-    answers = ["https://jira.acme.fr", "pat", False]
-    answers += [None, None, ["En cours"], "Fait", None, None, None, None, None, "gl"]
-    prompter, config = init(answers)
+def test_saying_no_to_the_summary_lets_you_change_boards_and_gitlab():
+    answers = ["https://jira.acme.fr", "pat", False, None, None, None, None, None, "gl"]
+    prompter, _ = init(answers)
     asked = questions(prompter)
     assert asked[3:5] == ["Board de ton équipe", "Board des mises en preprod/prod"]
     assert asked[-2:] == ["URL GitLab", "Token GitLab"]
-    assert (config.jira.rc_from_statuses, config.jira.status_after_rc) == (["En cours"], "Fait")
+
+
+def test_correcting_the_team_board_offers_only_team_roles():
+    answers = ["https://jira.acme.fr", "pat", False, None, None]
+    answers += ["En cours", "MR prête pour une RC", None]  # board de l'équipe
+    answers += [None, None, "gl"]  # board des mises en prod, URL GitLab, token
+    prompter, config = init(answers)
+    roles = dict(prompter.offered)["Rôle de « En cours »"]
+    assert any("RC" in r for r in roles) and not any("déploiement" in r for r in roles)
+    assert config.jira.rc_from_statuses == ["En cours", "En revue"]  # ordre du board
+
+
+def test_correcting_the_deploy_board_offers_no_rc_role():
+    answers = ["https://jira.acme.fr", "pat", False, None, None, None]
+    answers += ["En preprod", "Après la release finale", None]  # board des mises en prod
+    answers += [None, "gl"]
+    prompter, config = init(answers)
+    roles = dict(prompter.offered)["Rôle de « En preprod »"]
+    assert not any("RC" in r for r in roles)
+    assert config.jira.status_after_final == "En preprod"
+    assert "preprod" not in config.jira.status_after_deploy  # une colonne, un rôle
+    assert config.jira.final_from_statuses == ["En prod"]
 
 
 def test_rerun_keeps_values_tokens_and_repos(home):
@@ -152,3 +188,20 @@ def test_failed_connection_offers_to_retry(home):
     wizard.run_init(prompter, lambda c, t: next(clients), lambda c, t: FakeTracker())
     assert TokenStore(home).get("jira") == "good"
     assert any("Token refusé" in m for m in prompter.messages)
+
+
+def test_deploy_board_is_the_board_holding_tickets_linked_to_mine():
+    issue = Issue("PROJ-123", "Paiements", "En cours", links=("OPS-9",))
+    boards = [Board("4922", "Squad Paiement"), Board("5", "Squad Data"), Board("77", "Ops")]
+    ops = ["A planifier", "CAB", "Fait"]  # ni le nom ni les colonnes ne disent « prod »
+    jira = tracker(
+        issue=issue,
+        all_boards=boards,
+        board_statuses={"4922": DEV, "5": DEV, "77": ops},
+        linked_by_board={"77": [Issue("OPS-9", "MEP paiements", "CAB")]},
+    )
+    answers = ["https://jira.acme.fr", "pat", "Squad Paiement"]
+    answers += [None, None, "gl"]  # colonnes MEP pas trouvées : liste ouverte puis « C'est bon »
+    prompter, config = init(answers, jira)
+    assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
+    assert "Board des mises en preprod/prod" not in questions(prompter)

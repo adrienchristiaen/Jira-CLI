@@ -109,3 +109,76 @@ def _guess_env(statuses: list[str], env: str) -> str:
     return next((n for n in matching if re.match(r"(en|d[eé]ploy)", n, re.IGNORECASE)), "") or (
         matching[0] if matching else ""
     )
+
+
+# --- rôle de chaque colonne : ce que l'init montre et fait corriger, board par board ---
+
+_LABELS = {
+    "rc_from_statuses": "MR prête pour une RC",
+    "status_after_rc": "Après la RC",
+    "status_after_deploy": "Après déploiement {env}",
+    "status_after_final": "Après la release finale",
+}
+
+
+def board_fields(environments: list[str], team: bool, deploy: bool) -> list[str]:
+    """Rôles possibles pour les colonnes d'un board : RC côté équipe, déploiements côté MEP."""
+    fields = ["rc_from_statuses", "status_after_rc"] if team else []
+    if deploy:
+        fields += [f"status_after_deploy.{env}" for env in environments]
+        fields += ["status_after_final"]
+    return fields
+
+
+def label(field: str) -> str:
+    name, _, env = field.partition(".")
+    return _LABELS[name].format(env=env)
+
+
+def role_of(jira: JiraConfig, column: str, fields: list[str]) -> str:
+    """Rôle de la colonne parmi `fields`, vide si aucun."""
+    for field in fields:
+        value = _value(jira, field)
+        if column == value or (isinstance(value, list) and column in value):
+            return field
+    return ""
+
+
+def assign(
+    jira: JiraConfig, column: str, field: str, columns: list[str], environments: list[str]
+) -> None:
+    """Donne un rôle (ou aucun, field vide) à une colonne : une colonne, un rôle."""
+    every = board_fields(environments, True, True)
+    if role_of(jira, column, every) == "rc_from_statuses":
+        jira.rc_from_statuses = [c for c in jira.rc_from_statuses if c != column]
+    for name in ("status_after_rc", "status_after_final"):
+        if getattr(jira, name) == column:
+            setattr(jira, name, "")
+    jira.status_after_deploy = {e: s for e, s in jira.status_after_deploy.items() if s != column}
+    name, _, env = field.partition(".")
+    if name == "rc_from_statuses":
+        chosen = {*jira.rc_from_statuses, column}
+        jira.rc_from_statuses = [c for c in columns if c in chosen] + [
+            c for c in jira.rc_from_statuses if c not in columns
+        ]
+    elif env:
+        jira.status_after_deploy[env] = column
+    elif name:
+        setattr(jira, name, column)
+    last = [jira.status_after_deploy.get(env, "") for env in environments[-1:]]
+    jira.final_from_statuses = [s for s in last if s]
+
+
+def linked_boards(
+    issues: Iterable[Issue], boards: list[Board], linked_issues: Callable[[str, str], list[Issue]]
+) -> list[Board]:
+    """Boards qui portent des tickets liés aux miens, dans un autre projet (ticket MEP…)."""
+    mine = [i for i in issues if any(_project(k) != _project(i.key) for k in i.links)][:3]
+    found = []
+    for board in boards:
+        for issue in mine:
+            others = linked_issues(issue.key, board.id)
+            if any(_project(o.key) != _project(issue.key) for o in others):
+                found.append(board)
+                break
+    return found

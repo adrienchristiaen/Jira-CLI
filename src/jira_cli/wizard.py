@@ -22,6 +22,8 @@ from .models import Board, Issue
 from .tokens import TokenStore
 
 NONE = "(ne pas changer la colonne du ticket)"
+DONE = "✓ C'est bon"
+NO_ROLE = "Aucun rôle"
 SAME_BOARD = "Le même board"
 NETWORK_ERRORS = (ApiError, requests.RequestException)
 DEFAULT_GITLAB = "https://gitlab.com"
@@ -127,11 +129,19 @@ class _Discovery:
         self.issues = _quiet(lambda: self.tracker.search(self.jira.jql), [])
         self._find_boards()
         self._guess_columns()
-        for field in discovery.missing(self.jira, self.environments):
-            self._ask_column(field)
+        for board, fields in self._boards():
+            if missing := [
+                f for f in discovery.missing(self.jira, self.environments) if f in fields
+            ]:
+                self.prompter.explain(
+                    f"Colonnes pas trouvées sur {self._name(board)} : "
+                    + ", ".join(discovery.label(f) for f in missing)
+                )
+                self._correct_columns(board, fields)
         self._find_gitlab()
 
     def correct(self) -> None:
+        before = (self.jira.board, self.jira.deploy_board)
         boards = self.team + self.deploy
         if boards:
             self.jira.board = _choose_board(
@@ -145,26 +155,46 @@ class _Discovery:
                 self.jira.deploy_board,
                 SAME_BOARD,
             )
-        for field in _fields(self.environments):
-            self._ask_column(field)
+        if (self.jira.board, self.jira.deploy_board) != before:  # autres boards : on re-déduit
+            self.jira.rc_from_statuses, self.jira.status_after_rc = [], ""
+            self.jira.status_after_deploy, self.jira.final_from_statuses = {}, []
+            self.jira.status_after_final = ""
+            self._guess_columns()
+        for board, fields in self._boards():
+            self._correct_columns(board, fields)
         self.gitlab.url = _ask_url(self.prompter, "URL GitLab", self.gitlab.url)
 
     def summary(self) -> str:
-        names = {b.id: b.name for b in self.team + self.deploy}
-        jira, envs = self.jira, self.environments
-        deploys = " · ".join(f"{env} → {jira.status_after_deploy.get(env, '?')}" for env in envs)
-        lines = [
-            f"  Board de l'équipe     {names.get(jira.board, jira.board or '(tous les statuts)')}",
-            f"  Mises en prod         {names.get(jira.deploy_board, jira.deploy_board) or 'le même board'}",
-            f"  Prête pour une RC     {', '.join(jira.rc_from_statuses) or '?'}",
-            f"  Après la RC           {jira.status_after_rc or '(pas de transition)'}",
-            f"  Après déploiement     {deploys}",
-            f"  Release finale depuis {', '.join(jira.final_from_statuses) or '?'}",
-            f"  Après la release      {jira.status_after_final or '(pas de transition)'}",
-            f"  GitLab                {self.gitlab.url}"
-            + (f"  (trouvé dans {self.gitlab_source})" if self.gitlab_source else ""),
-        ]
+        lines = []
+        for title, (board, fields) in zip(("Board de l'équipe", "Mises en prod"), self._boards()):
+            lines.append(f"  {title} : {self._name(board)}")
+            for column in self._statuses(board):
+                if role := discovery.role_of(self.jira, column, fields):
+                    lines.append(f"    {column:<24} {discovery.label(role)}")
+            missing = [f for f in discovery.missing(self.jira, self.environments) if f in fields]
+            if missing:
+                lines.append("    pas trouvé : " + ", ".join(discovery.label(f) for f in missing))
+        if not self.jira.deploy_board:
+            lines.append("  Mises en prod : le même board")
+        lines.append(
+            f"  GitLab : {self.gitlab.url}"
+            + (f"  (trouvé dans {self.gitlab_source})" if self.gitlab_source else "")
+        )
         return "\n".join(lines)
+
+    def _boards(self) -> list[tuple[str, list[str]]]:
+        """(board, rôles possibles de ses colonnes) : l'équipe, puis les mises en prod."""
+        envs = self.environments
+        if not self.jira.deploy_board:
+            return [(self.jira.board, discovery.board_fields(envs, True, True))]
+        return [
+            (self.jira.board, discovery.board_fields(envs, True, False)),
+            (self.jira.deploy_board, discovery.board_fields(envs, False, True)),
+        ]
+
+    def _name(self, board: str) -> str:
+        names = {b.id: b.name for b in self.team + self.deploy}
+        return names.get(board, board) or "tous les statuts"
 
     # --- déductions ---
 
@@ -175,6 +205,10 @@ class _Discovery:
         if linked:  # boards des tickets liés : seuls ceux de mises en prod nous intéressent
             others = [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in boards]
             deploy += discovery.split_boards(others, self._statuses, self.environments)[1]
+        linked = discovery.linked_boards(self.issues, team, self.tracker.linked_issues)
+        if linked and len(linked) < len(team):  # board des tickets liés aux miens : les MEP
+            team = [b for b in team if b not in linked]
+            deploy = linked + [b for b in deploy if b not in linked]
         self.team, self.deploy = team, deploy
         known = {b.id for b in team + deploy}
         if self.jira.board not in known and (team or deploy):
@@ -212,52 +246,27 @@ class _Discovery:
 
     # --- questions ---
 
-    def _ask_column(self, field: str) -> None:
-        name, _, env = field.partition(".")
-        on_deploy = name in ("status_after_deploy", "final_from_statuses", "status_after_final")
-        statuses = self._statuses(
-            self.jira.deploy_board if on_deploy and self.jira.deploy_board else self.jira.board
-        )
-        question = _QUESTIONS[name].format(env=env)
-        if name in ("rc_from_statuses", "final_from_statuses"):
-            setattr(
-                self.jira,
-                name,
-                _statuses(self.prompter, question, statuses, getattr(self.jira, name)),
+    def _correct_columns(self, board: str, fields: list[str]) -> None:
+        """Choisir une colonne, puis son rôle ; jusqu'à « C'est bon »."""
+        columns = self._statuses(board)
+        while True:
+            items = [
+                f"{c}  → "
+                + (discovery.label(r) if (r := discovery.role_of(self.jira, c, fields)) else "—")
+                for c in columns
+            ]
+            index = self.prompter.choose(
+                f"Colonne à corriger · {self._name(board)}", [*items, DONE], len(items)
             )
-        elif env:
-            value = _status(
-                self.prompter, question, statuses, self.jira.status_after_deploy.get(env, "")
-            )
-            self.jira.status_after_deploy[env] = value
-            self.jira.status_after_deploy = {
-                e: s for e, s in self.jira.status_after_deploy.items() if s
-            }
-        else:
-            setattr(
-                self.jira,
-                name,
-                _status(self.prompter, question, statuses, getattr(self.jira, name)),
-            )
-
-
-_QUESTIONS = {
-    "rc_from_statuses": "Colonnes où la MR est prête pour une RC",
-    "status_after_rc": "Colonne après lancement de la RC",
-    "status_after_deploy": "Colonne après la MR de déploiement {env}",
-    "final_from_statuses": "Colonnes où la release finale peut partir",
-    "status_after_final": "Colonne après la release finale",
-}
-
-
-def _fields(environments: list[str]) -> list[str]:
-    return [
-        "rc_from_statuses",
-        "status_after_rc",
-        *(f"status_after_deploy.{env}" for env in environments),
-        "final_from_statuses",
-        "status_after_final",
-    ]
+            if index == len(items):
+                return
+            column = columns[index]
+            roles = [discovery.label(f) for f in fields] + [NO_ROLE]
+            current = discovery.role_of(self.jira, column, fields)
+            default = fields.index(current) if current else len(fields)
+            choice = self.prompter.choose(f"Rôle de « {column} »", roles, default)
+            field = fields[choice] if choice < len(fields) else ""
+            discovery.assign(self.jira, column, field, columns, self.environments)
 
 
 def _connect_gitlab(prompter, gitlab: GitLabConfig, store: TokenStore, gitlab_client) -> None:
@@ -325,19 +334,3 @@ def _check(prompter, name: str, whoami, hint: Callable = lambda status: "") -> b
         if advice := hint(getattr(error, "status", None)):
             prompter.explain(advice)
         return not prompter.confirm("Ressaisir ?", True)
-
-
-def _status(prompter, question: str, statuses: list[str], current: str) -> str:
-    if not statuses:
-        return prompter.ask(f"{question} (vide = aucune)", current)
-    items = [NONE, *statuses]
-    default = items.index(current) if current in items else 0
-    return "" if (index := prompter.choose(question, items, default)) == 0 else items[index]
-
-
-def _statuses(prompter, question: str, statuses: list[str], current: list[str]) -> list[str]:
-    if not statuses:
-        answer = prompter.ask(f"{question} (séparées par des virgules)", ", ".join(current))
-        return [name.strip() for name in answer.split(",") if name.strip()]
-    checked = [statuses.index(name) for name in current if name in statuses]
-    return [statuses[index] for index in prompter.choose_many(question, statuses, checked)]

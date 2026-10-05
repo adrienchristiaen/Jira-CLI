@@ -28,6 +28,7 @@ class FakeTracker:
     board_projects: list[list[str]] = field(default_factory=list)
     linked: list[Issue] = field(default_factory=list)  # tickets liés, sur le board demandé
     linked_boards: list[str] = field(default_factory=list)
+    linked_by_board: dict[str, list[Issue]] = field(default_factory=dict)  # sinon `linked` partout
     project_boards: dict[str, list[Board]] = field(default_factory=dict)  # sinon all_boards
     links: list[str] = field(default_factory=list)  # liens web / panneau Développement
 
@@ -47,6 +48,8 @@ class FakeTracker:
 
     def linked_issues(self, key: str, board: str) -> list[Issue]:
         self.linked_boards.append(board)
+        if self.linked_by_board:
+            return self.linked_by_board.get(board, [])
         return self.linked
 
     def boards(self, projects: list[str]) -> list[Board]:
@@ -133,6 +136,7 @@ class ScriptedPrompter:
     def __init__(self, answers: Sequence[object] = ()) -> None:
         self.answers = list(answers)
         self.asked: list[tuple[str, str]] = []
+        self.offered: list[tuple[str, list[str]]] = []  # choix proposés à chaque menu
         self.messages: list[str] = []
 
     def info(self, message: str) -> None:
@@ -150,6 +154,7 @@ class ScriptedPrompter:
 
     def choose(self, question: str, items: Sequence[str], default: int = 0) -> int:
         self.asked.append((question, items[default]))
+        self.offered.append((question, list(items)))
         answer = self._next()
         if isinstance(answer, str):  # choix par libellé (début), plus lisible dans les tests
             return next(i for i, item in enumerate(items) if item.startswith(answer))
