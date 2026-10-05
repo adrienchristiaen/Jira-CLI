@@ -428,3 +428,25 @@ def test_head_pipeline_status_of_a_merge_request():
     assert client.pipeline_status(MR) == "failed"
     session.routes["/merge_requests/7"] = FakeResponse({"head_pipeline": None})
     assert client.pipeline_status(MR) == ""
+
+
+def test_board_history_is_the_status_path_of_recently_done_tickets():
+    def change(created, before, after):
+        items = [{"field": "status", "fromString": before, "toString": after}]
+        return {"created": created, "items": items + [{"field": "assignee"}]}
+
+    issue = {
+        "key": "PROJ-1",
+        "changelog": {
+            "histories": [  # pas forcément dans l'ordre
+                change("2026-01-03T10:00:00.000+0200", "En revue", "Fait"),
+                change("2026-01-01T10:00:00.000+0200", "Ouvert", "WIP"),
+                change("2026-01-02T10:00:00.000+0200", "WIP", "En revue"),
+            ]
+        },
+    }
+    session = FakeSession({"/rest/agile/1.0/board/42/issue": FakeResponse({"issues": [issue]})})
+    client = JiraClient("https://jira", session)
+    assert client.board_history("42") == [["Ouvert", "WIP", "En revue", "Fait"]]
+    params = session.calls[0][2]["params"]
+    assert params["expand"] == "changelog" and "statusCategory = Done" in params["jql"]

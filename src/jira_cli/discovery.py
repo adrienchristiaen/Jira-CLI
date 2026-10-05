@@ -59,13 +59,31 @@ def guess_columns(
 ) -> None:
     """Remplit les colonnes vides d'après leur nom ; ne touche jamais à une valeur réglée."""
     jira.rc_from_statuses = jira.rc_from_statuses or [c for c in dev if _REVIEW.search(c)]
-    jira.status_after_rc = jira.status_after_rc or _first(dev, _AFTER_RC)
+    jira.status_after_rc = jira.status_after_rc or _after_rc(dev)
     for env in environments:
         if not jira.status_after_deploy.get(env) and (guessed := _guess_env(deploy, env)):
             jira.status_after_deploy[env] = guessed
     last = [jira.status_after_deploy.get(env, "") for env in environments[-1:]]
     jira.final_from_statuses = jira.final_from_statuses or [s for s in last if s]
     jira.status_after_final = jira.status_after_final or _first(deploy[::-1], _DONE)
+
+
+def flow(paths: list[list[str]], columns: list[str]) -> list[str]:
+    """Colonnes que les tickets traversent vraiment (au moins un quart d'entre eux), dans
+    l'ordre moyen de leur parcours. Sans historique : les colonnes du board telles quelles."""
+    if not paths:
+        return columns
+    positions: dict[str, list[float]] = {}
+    for path in paths:
+        for index, status in enumerate(dict.fromkeys(path)):
+            positions.setdefault(status, []).append(path.index(status) / max(len(path) - 1, 1))
+    used = [
+        s
+        for s, seen in positions.items()
+        if len(seen) >= len(paths) / 4 and (not columns or s in columns)
+    ]
+    order = {s: i for i, s in enumerate(columns)}
+    return sorted(used, key=lambda s: (sum(positions[s]) / len(positions[s]), order.get(s, 0)))
 
 
 def missing(jira: JiraConfig, environments: list[str]) -> list[str]:
@@ -93,6 +111,15 @@ def _value(jira: JiraConfig, field: str):
 
 def _project(key: str) -> str:
     return key.rsplit("-", 1)[0]
+
+
+def _after_rc(statuses: list[str]) -> str:
+    """Colonne après la RC : celle qui suit la revue dans le flux (son nom aide à choisir)."""
+    reviews = [i for i, s in enumerate(statuses) if _REVIEW.search(s)]
+    if not reviews:
+        return _first(statuses, _AFTER_RC)
+    following = statuses[reviews[-1] + 1 :]
+    return _first(following, _AFTER_RC) or (following[0] if following else "")
 
 
 def _first(statuses: list[str], pattern: re.Pattern) -> str:

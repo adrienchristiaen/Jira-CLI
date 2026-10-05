@@ -238,10 +238,13 @@ class _Discovery:
         self.gitlab.url = _ask_url(self.prompter, "URL GitLab", DEFAULT_GITLAB)
 
     def _statuses(self, board: str) -> list[str]:
-        """Colonnes du board dans l'ordre ; tous les statuts sans board ou s'il est illisible."""
+        """Colonnes que les tickets du board traversent vraiment, dans l'ordre du flux ; à
+        défaut d'historique, celles du board ; sans board, tous les statuts."""
         if board not in self._columns:
             columns = _quiet(lambda: self.tracker.statuses(board), None) if board else None
-            self._columns[board] = columns or _quiet(self.tracker.statuses, [])
+            columns = columns or _quiet(self.tracker.statuses, [])
+            history = _quiet(lambda: self.tracker.board_history(board), []) if board else []
+            self._columns[board] = discovery.flow(history, columns)
         return self._columns[board]
 
     # --- questions ---

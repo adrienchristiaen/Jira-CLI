@@ -110,6 +110,18 @@ class JiraClient:
                     break
         return list(found.values())
 
+    def board_history(self, board: str, limit: int = 30) -> list[list[str]]:
+        """Parcours (statuts successifs) des derniers tickets terminés du board."""
+        params = {
+            "jql": "statusCategory = Done ORDER BY updated DESC",
+            "fields": "status",
+            "expand": "changelog",
+            "maxResults": limit,
+        }
+        url = f"{self._agile}/board/{board}/issue"
+        issues = check(self._session.get(url, params=params)).json()["issues"]
+        return [path for issue in issues if (path := _path(issue))]
+
     def statuses(self, board: str = "") -> list[str]:
         """Noms des statuts, pour proposer les colonnes du board à l'init.
 
@@ -155,3 +167,9 @@ def _issue(data: dict) -> Issue:
         for link in fields.get("issuelinks") or []
     )
     return Issue(data["key"], fields["summary"], fields["status"]["name"], links)
+
+
+def _path(issue: dict) -> list[str]:
+    histories = sorted(issue.get("changelog", {}).get("histories", []), key=lambda h: h["created"])
+    changes = [i for h in histories for i in h["items"] if i.get("field") == "status"]
+    return [changes[0]["fromString"], *(c["toString"] for c in changes)] if changes else []
