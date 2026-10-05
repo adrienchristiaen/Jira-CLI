@@ -153,6 +153,8 @@ def test_without_review_column_rc_starts_from_the_step_before_after_rc():
         ("A releaser", "release"),
         ("A installer preprod", "deploy"),
         ("En prod", "deploy"),
+        ("PREPROD VALIDATION", "acceptance"),
+        ("Recette preprod", "check"),
         ("Livré", "done"),
         ("Backlog", ""),
         ("A faire", ""),

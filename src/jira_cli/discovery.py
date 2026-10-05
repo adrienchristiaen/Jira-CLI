@@ -152,14 +152,15 @@ INTENTS = {
     "deploy": "Déployer preprod/prod",
     "done": "Terminé",
 }
-# Du plus précis au plus vague : « A installer preprod » est un déploiement, pas une recette.
+# Du plus précis au plus vague : une vérification prime sur l'environnement (« PREPROD
+# VALIDATION » se vérifie), l'environnement sur l'installation (« A installer preprod » déploie).
 _INTENT_NAMES = [
+    ("acceptance", re.compile(r"recette (en cours|m[eé]tier)|uat|m[eé]tier|validation", re.I)),
+    ("check", re.compile(r"recett|qualif|test|v[eé]rif", re.IGNORECASE)),
     ("deploy", re.compile(r"\b(pr[eé]-?)?prod|\bmep\b", re.IGNORECASE)),
     ("review", _REVIEW),
     ("release", re.compile(r"releas|stable", re.IGNORECASE)),
     ("install", re.compile(r"install|d[eé]ploy", re.IGNORECASE)),
-    ("acceptance", re.compile(r"recette (en cours|m[eé]tier)|uat|m[eé]tier", re.IGNORECASE)),
-    ("check", re.compile(r"recett|qualif|test|v[eé]rif", re.IGNORECASE)),
     ("done", _DONE),
     ("develop", re.compile(r"wip|en cours|progress|d[eé]v", re.IGNORECASE)),
 ]
