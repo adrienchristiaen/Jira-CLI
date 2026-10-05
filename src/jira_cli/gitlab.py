@@ -10,6 +10,7 @@ import requests
 
 from .http import check
 from .models import MergeRequest, PipelineVariable
+from .ports import ProjectRef
 
 _CI_VARIABLES_QUERY = """
 query($path: ID!, $ref: String!) {
@@ -39,12 +40,20 @@ class GitLabClient:
             "/merge_requests", {"scope": "all", "state": state, "search": ticket_key}
         )
         found = [mr for mr in found if mr["state"] in ("opened", "merged")]
-        key = re.compile(rf"(?<![A-Z0-9]){re.escape(ticket_key)}(?!\d)", re.IGNORECASE)
+        key = _key_pattern(ticket_key)
         return [
             _merge_request(mr)
             for mr in found
             if key.search(" ".join((mr["title"], mr["source_branch"], mr.get("description") or "")))
         ]
+
+    def branches(self, project: ProjectRef, ticket_key: str) -> list[str]:
+        """Branches du projet qui citent le ticket (feat/PROJ-123-…), pas PROJ-1234."""
+        found = self._paginate(
+            f"/projects/{quote(str(project), safe='')}/repository/branches", {"search": ticket_key}
+        )
+        key = _key_pattern(ticket_key)
+        return [b["name"] for b in found if key.search(b["name"])]
 
     def changed_paths(self, mr: MergeRequest) -> list[str]:
         diffs = self._paginate(f"/projects/{mr.project_id}/merge_requests/{mr.iid}/diffs", {})
@@ -196,3 +205,7 @@ def _merge_request(data: dict) -> MergeRequest:
         web_url=data["web_url"],
         state=data.get("state", "opened"),
     )
+
+
+def _key_pattern(ticket_key: str) -> re.Pattern:
+    return re.compile(rf"(?<![A-Z0-9]){re.escape(ticket_key)}(?!\d)", re.IGNORECASE)

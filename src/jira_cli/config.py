@@ -43,6 +43,8 @@ class JiraConfig:
     status_after_final: str = ""
     # Statut visé après création de la MR de déploiement, par environnement ({prod: En prod}).
     status_after_deploy: dict[str, str] = field(default_factory=dict)
+    # Ce qu'on fait dans chaque colonne utilisée : {WIP: develop, A installer: install…}.
+    intents: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
