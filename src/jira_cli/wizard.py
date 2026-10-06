@@ -257,16 +257,18 @@ class _Discovery:
     # --- déductions ---
 
     def _find_boards(self) -> None:
-        """Board de l'équipe : celui qui porte le plus de mes tickets. Board des mises en prod :
-        celui qui porte le plus de tickets d'autres projets liés aux miens, en cours ou terminés
-        (un ticket en cours n'a souvent pas encore de ticket MEP). Aucun nom n'est lu."""
+        """Board de l'équipe : celui qui ressemble le plus à mes tickets. Board des mises en prod :
+        celui qui ressemble le plus aux tickets d'autres projets liés aux miens, en cours ou
+        terminés (un ticket en cours n'a souvent pas encore de ticket MEP). Aucun nom n'est lu."""
         own, _ = discovery.projects(self.issues)
         mine = _quiet(lambda: self.tracker.boards(own), []) if own else []
-        held = self._held(mine)
-        team, sure = discovery.rank_team(mine, held)
+        held = self._counts(mine, [i.key for i in self.issues])
+        self._evidence = {
+            b: _evidence(h, "{n} de tes {size} tickets", len(self.issues)) for b, h in held.items()
+        }
+        team, sure = discovery.rank_boards(mine, held, len(self.issues))
         self.team = team
         if team and "board" not in self.jira.pinned:
-            self._evidence = self._team_evidence(held)
             if sure:
                 self.jira.board = team[0].id
             else:
@@ -279,20 +281,12 @@ class _Discovery:
         others = [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in mine]
         others = others if linked else []
         candidates = [b for b in mine + others if b.id != self.jira.board] if keys else []
-        links = dict(
-            zip(
-                (b.id for b in candidates),
-                _parallel(
-                    lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id, keys), 0),
-                    candidates,
-                ),
+        links = self._counts(candidates, keys)
+        for board, found in links.items():
+            self._evidence[board] = _evidence(
+                found, "{n} des {size} tickets liés aux tiens", len(keys)
             )
-        )
-        self._evidence = self._team_evidence(held) | {
-            b.id: _evidence(held.get(b.id), links.get(b.id, 0), len(self.issues))
-            for b in candidates
-        }
-        ranked, sure = discovery.rank_deploy([b for b in candidates if links[b.id]], links)
+        ranked, sure = discovery.rank_boards(candidates, links, len(keys))
         self.deploy = ranked
         if "deploy_board" in self.jira.pinned:
             return
@@ -331,19 +325,15 @@ class _Discovery:
         self.deploy.append(board)  # pour l'afficher sous son nom
         return board.id
 
-    def _team_evidence(self, held: dict[str, tuple[int, int]]) -> dict[str, str]:
-        return {b: _evidence(h, 0, len(self.issues)) for b, h in held.items()}
-
-    def _held(self, boards: list[Board]) -> dict[str, tuple[int, int]]:
-        """Par board : (combien de mes tickets il porte, combien de tickets en tout)."""
-        keys = [i.key for i in self.issues]
-        if not keys:
+    def _counts(self, boards: list[Board], keys: list[str]) -> dict[str, tuple[int, int]]:
+        """Par board : (combien des tickets `keys` il porte, combien de tickets en tout)."""
+        if not keys or not boards:
             return {}
-        mine = _parallel(
+        held = _parallel(
             lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id, keys), 0), boards
         )
         total = _parallel(lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id), 0), boards)
-        return {b.id: (m, t) for b, m, t in zip(boards, mine, total)}
+        return {b.id: (h, t) for b, h, t in zip(boards, held, total)}
 
     def _guess_columns(self) -> None:
         dev = self._statuses(self.jira.board)
@@ -472,14 +462,11 @@ def _with_evidence(name: str, evidence: str) -> str:
     return f"{name}  ({evidence})" if evidence else name
 
 
-def _evidence(held: tuple[int, int] | None, links: int, mine: int) -> str:
-    """« 3 de tes 4 tickets · 120 tickets · 2 tickets liés » : ce qui a guidé le choix."""
-    parts = []
-    if held:
-        parts += [f"{held[0]} de tes {mine} tickets", f"{held[1]} tickets"]
-    if links:
-        parts.append(f"{links} tickets liés aux tiens")
-    return " · ".join(parts)
+def _evidence(held: tuple[int, int] | None, text: str, size: int) -> str:
+    """« 5 de tes 18 tickets · 3421 tickets en tout » : ce qui a guidé le choix."""
+    if not held:
+        return ""
+    return f"{text.format(n=held[0], size=size)} · {held[1]} tickets en tout"
 
 
 def _ask_url(prompter, question: str, default: str) -> str:
