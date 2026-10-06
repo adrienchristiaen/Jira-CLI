@@ -529,3 +529,9 @@ def test_find_boards_by_name():
         Board("77", "Phenix Deployments")
     ]
     assert session.calls[0][2]["params"]["name"] == "Deploy"
+
+
+def test_merge_requests_are_searched_in_the_group_when_there_is_one():
+    session = FakeSession({"/merge_requests": FakeResponse([])})
+    GitLabClient("https://gitlab.com", session, group="agilefabric").code_events("PROJ-1")
+    assert "/groups/agilefabric/merge_requests" in session.calls[0][1]

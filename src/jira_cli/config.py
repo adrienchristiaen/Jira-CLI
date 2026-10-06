@@ -53,6 +53,7 @@ class JiraConfig:
 class GitLabConfig:
     url: str
     auth: str = "token"
+    group: str = ""  # groupe de tête où chercher les MR ; vide = toute l'instance
 
 
 @dataclass

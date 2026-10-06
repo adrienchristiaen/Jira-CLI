@@ -29,7 +29,8 @@ def connect() -> Context:
     config = config_module.load()
     store = TokenStore(config_module.home())
     tracker = JiraClient(config.jira.url, jira_session(config.jira, _token(store, "jira")))
-    host = GitLabClient(config.gitlab.url, gitlab_session(config.gitlab, _token(store, "gitlab")))
+    session = gitlab_session(config.gitlab, _token(store, "gitlab"))
+    host = GitLabClient(config.gitlab.url, session, group=config.gitlab.group)
     return Context(config, tracker, host)
 
 

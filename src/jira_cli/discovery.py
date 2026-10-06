@@ -98,6 +98,30 @@ def remote_hosts(remotes: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(hosts))
 
 
+def gitlab_candidates(url: str) -> list[tuple[str, str]]:
+    """(adresse du serveur, groupe) possibles d'une URL GitLab collée : le serveur peut avoir un
+    chemin (/gitlab), le reste commence par le groupe où chercher les MR."""
+    bases = base_candidates(url)
+    full = bases[-1]
+    return [(base, full[len(base) :].strip("/").split("/")[0]) for base in bases]
+
+
+def namespaces(urls: Iterable[str]) -> dict[str, str]:
+    """Par hôte : le groupe de tête le plus cité par ces liens et remotes git."""
+    found: dict[str, Counter] = {}
+    for url in urls:
+        if "://" in url:
+            parts = urlsplit(url)
+            host, path = f"https://{parts.hostname}", parts.path
+        else:  # git@hôte:groupe/projet.git
+            host_part, _, path = url.split("@", 1)[-1].partition(":")
+            host = f"https://{host_part}"
+        segments = [s for s in path.split("/") if s]
+        if len(segments) > 1:  # au moins groupe/projet
+            found.setdefault(host, Counter())[segments[0]] += 1
+    return {host: counter.most_common(1)[0][0] for host, counter in found.items()}
+
+
 def base_candidates(url: str) -> list[str]:
     """Adresses de base possibles d'une URL collée depuis le navigateur, de l'hôte seul au
     chemin complet : la première où Jira répond est la bonne (context path compris)."""

@@ -22,8 +22,14 @@ query($path: ID!, $ref: String!) {
 
 
 class GitLabClient:
-    def __init__(self, base_url: str, session: requests.Session, sleep=time.sleep) -> None:
+    def __init__(
+        self, base_url: str, session: requests.Session, sleep=time.sleep, group: str = ""
+    ) -> None:
         self._base = base_url.rstrip("/")
+        # Sur une instance partagée (gitlab.com), chercher dans tout GitLab est lent et bruité.
+        self._mrs = (
+            f"/groups/{quote(group, safe='')}/merge_requests" if group else "/merge_requests"
+        )
         self._api = self._base + "/api/v4"
         self._session = session
         self._sleep = sleep
@@ -36,9 +42,7 @@ class GitLabClient:
     ) -> list[MergeRequest]:
         """MR ouvertes (et mergées si demandé) qui citent le ticket, sur toute l'instance."""
         state = "all" if include_merged else "opened"
-        found = self._paginate(
-            "/merge_requests", {"scope": "all", "state": state, "search": ticket_key}
-        )
+        found = self._paginate(self._mrs, {"scope": "all", "state": state, "search": ticket_key})
         found = [mr for mr in found if mr["state"] in ("opened", "merged")]
         key = _key_pattern(ticket_key)
         return [
@@ -50,9 +54,7 @@ class GitLabClient:
     def code_events(self, ticket_key: str) -> list[CodeEvent]:
         """Commits, ouvertures et merges des MR qui citent le ticket, dans l'ordre du temps."""
         key = _key_pattern(ticket_key)
-        found = self._paginate(
-            "/merge_requests", {"scope": "all", "state": "all", "search": ticket_key}
-        )
+        found = self._paginate(self._mrs, {"scope": "all", "state": "all", "search": ticket_key})
         events = []
         for mr in found:
             if not key.search(" ".join((mr["title"], mr["source_branch"]))):
