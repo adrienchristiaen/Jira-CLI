@@ -1,9 +1,16 @@
 """`jira-cli init` : l'adresse de Jira et un token ; le reste est déduit puis montré pour validation.
 
-Déduit sans question : l'identité (le token), les boards (projets de tes tickets et de leurs
-tickets liés), leur rôle (équipe ou mises en prod, d'après nom et colonnes), les colonnes de
-chaque étape, l'adresse du GitLab (liens des tickets). Seul ce qui est ambigu ou introuvable est
-demandé, puis tout se corrige d'un « non » au résumé. Relancer l'init repart des valeurs actuelles.
+Dans l'ordre, sans jamais lire un nom :
+1. Toi : ton identité (le token), tes tickets en cours et récents.
+2. Board de base : parmi les boards de ces tickets, celui qui leur ressemble le plus ; une
+   question seulement s'il y a égalité. Aucun board : tous les statuts.
+3. Board des mises en prod : celui qui ressemble le plus aux tickets d'autres projets liés aux
+   tiens. Aucun : le board de base fait tout.
+4. GitLab : l'hôte vers lequel pointent tes tickets ou le remote git du dossier, qui accepte
+   le token et montre de l'activité sur les tickets terminés ; sinon un autre, sinon demandé.
+5. Colonnes : ce que GitLab a vu pendant que les tickets terminés y étaient dit à quoi chacune
+   sert, puis son rôle. Un seul résumé, avec les preuves, se corrige d'un « non ».
+`jira-cli init --explain` affiche chaque étape et ses preuves.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ NO_INTENT = "Rien de particulier"
 SAME_BOARD = "Le même board"
 OTHER_BOARD = "Autre board (chercher par son nom)"
 BOARDS = ("board", "deploy_board")
+RECENT = "assignee was currentUser() ORDER BY updated DESC"  # JQL standard de Jira
 NETWORK_ERRORS = (ApiError, requests.RequestException)
 
 
@@ -57,7 +65,9 @@ def run_init(
     jira_client: Callable = _jira_client,
     gitlab_client: Callable = _gitlab_client,
     remotes: Callable = _git_remotes,
+    explain: bool = False,
 ) -> Config:
+    """`explain` : chaque déduction est affichée avec ses preuves."""
     current = _current()
     store = TokenStore(config_module.home())
     prompter.title(
@@ -70,10 +80,22 @@ def run_init(
     gitlab = current.gitlab if current else GitLabConfig(url="")
 
     prompter.info("\nCe que j'ai trouvé")
-    found = _Discovery(prompter, jira, gitlab, tracker, environments, remotes)
+    found = _Discovery(prompter, jira, gitlab, tracker, environments, remotes, explain)
     found.run()
     found.learn(_connect_gitlab(prompter, gitlab, found.code_hosts, store, gitlab_client))
-    found.ask_missing()
+    others = [h for h in found.code_hosts if h != gitlab.url]
+    while found.learnt_from and not found.active:
+        prompter.explain(
+            f"Aucune activité sur {gitlab.url} pour {found.learnt_from} tickets terminés : "
+            "ce n'est sans doute pas ton GitLab."
+        )
+        if not others:  # plus de candidat : on demande, une fois
+            gitlab.url = _ask_url(prompter, "URL GitLab", gitlab.url)
+            found.learn(_connect_gitlab(prompter, gitlab, [gitlab.url], store, gitlab_client))
+            break
+        found.learn(_connect_gitlab(prompter, gitlab, others, store, gitlab_client))
+        # Les hôtes d'avant celui retenu ont refusé le token : on ne garde que ceux d'après.
+        others = others[others.index(gitlab.url) + 1 :] if gitlab.url in others else []
     prompter.info(found.summary())
     if not prompter.confirm("Tout est juste ?", True):
         url = gitlab.url
@@ -141,9 +163,22 @@ class _Discovery:
     """Boards, colonnes et GitLab déduits ; questions seulement pour l'ambigu ou l'introuvable."""
 
     def __init__(
-        self, prompter, jira: JiraConfig, gitlab: GitLabConfig, tracker, environments, remotes
+        self,
+        prompter,
+        jira: JiraConfig,
+        gitlab: GitLabConfig,
+        tracker,
+        environments,
+        remotes,
+        explain: bool = False,
     ):
-        self.prompter, self.jira, self.gitlab = prompter, jira, gitlab
+        self.prompter, self.jira, self.gitlab, self._explain = prompter, jira, gitlab, explain
+        self.tickets: list[Issue] = []  # en cours et récents : ce qui rattache aux boards
+        self.learnt_from = 0  # tickets terminés regardés dans GitLab
+        self.active = 0  # dont ceux qui y ont une activité
+        self._support: dict[
+            str, tuple[int, int]
+        ] = {}  # colonne -> (tickets qui le montrent, passés)
         self.tracker, self.environments, self._remotes = tracker, environments, remotes
         self._evidence: dict[str, str] = {}  # board -> ce qui a guidé son choix
         self.issues: list[Issue] = []
@@ -165,6 +200,11 @@ class _Discovery:
         j.rc_from_statuses, j.final_from_statuses = [], []
         j.status_after_deploy, j.intents = {}, {}
         self.issues = _quiet(lambda: self.tracker.search(self.jira.jql), [])
+        # Les tickets en cours seuls peuvent être peu nombreux, ou tous ailleurs : les récents
+        # (terminés compris) disent mieux où l'on travaille.
+        recent = _quiet(lambda: self.tracker.search(RECENT, 50), [])
+        self.tickets = list({i.key: i for i in self.issues + recent}.values())
+        self._trace(f"Toi : {len(self.issues)} tickets en cours, {len(self.tickets)} récents.")
         self._find_boards()
         self._find_code_hosts()
 
@@ -190,20 +230,19 @@ class _Discovery:
             or sorted((e for k in h.links for e in found.get(k, [])), key=lambda e: e.at)
             for h in histories
         }
-        for column, intent in discovery.learn_intents(histories, merged).items():
+        source = self._sources.get(self.gitlab.url, "ta config")
+        self._trace(f"GitLab : {self.gitlab.url}, trouvé dans {source}.")
+        self.learnt_from = len(histories)
+        self.active = sum(bool(e) for e in merged.values())
+        self._trace(f"GitLab : activité trouvée pour {self.active}/{self.learnt_from} tickets.")
+        for column, (intent, n, total) in discovery.intent_votes(histories, merged).items():
             self.jira.intents[column] = intent
+            self._support[column] = (n, total)
         self._guess_columns()
 
-    def ask_missing(self) -> None:
-        for board, fields in self._boards():
-            if missing := [
-                f for f in discovery.missing(self.jira, self.environments) if f in fields
-            ]:
-                self.prompter.explain(
-                    f"Colonnes pas trouvées sur {self._name(board)} : "
-                    + ", ".join(discovery.label(f) for f in missing)
-                )
-                self._correct_columns(board, fields)
+    def _trace(self, text: str) -> None:
+        if self._explain:
+            self.prompter.explain(text)
 
     def correct(self) -> None:
         before = (self.jira.board, self.jira.deploy_board)
@@ -260,13 +299,16 @@ class _Discovery:
         """Board de l'équipe : celui qui ressemble le plus à mes tickets. Board des mises en prod :
         celui qui ressemble le plus aux tickets d'autres projets liés aux miens, en cours ou
         terminés (un ticket en cours n'a souvent pas encore de ticket MEP). Aucun nom n'est lu."""
-        own, _ = discovery.projects(self.issues)
+        own, _ = discovery.projects(self.tickets)
         mine = _quiet(lambda: self.tracker.boards(own), []) if own else []
-        held = self._counts(mine, [i.key for i in self.issues])
+        held = self._counts(mine, [i.key for i in self.tickets])
         self._evidence = {
-            b: _evidence(h, "{n} de tes {size} tickets", len(self.issues)) for b, h in held.items()
+            b: _evidence(h, "{n} de tes {size} tickets", len(self.tickets)) for b, h in held.items()
         }
-        team, sure = discovery.rank_boards(mine, held, len(self.issues))
+        team, sure = discovery.rank_boards(mine, held, len(self.tickets))
+        self._trace_boards("Boards de tes tickets", team)
+        if not team:
+            self._trace("Aucun board ne porte tes tickets : tous les statuts sont utilisés.")
         self.team = team
         if team and "board" not in self.jira.pinned:
             if sure:
@@ -275,7 +317,7 @@ class _Discovery:
                 self._pick("board", "Board de ton équipe", team)
         done = self._history(self.jira.board)
         keys = discovery.foreign_links(
-            [(i.key, i.links) for i in self.issues] + [(h.key, h.links) for h in done]
+            [(i.key, i.links) for i in self.tickets] + [(h.key, h.links) for h in done]
         )
         linked, _ = discovery.projects(Issue(k, "", "") for k in keys)
         others = [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in mine]
@@ -288,6 +330,10 @@ class _Discovery:
             )
         ranked, sure = discovery.rank_boards(candidates, links, len(keys))
         self.deploy = ranked
+        self._trace(f"{len(keys)} tickets d'autres projets liés aux tiens.")
+        self._trace_boards("Boards de ces tickets liés", ranked)
+        if not ranked:
+            self._trace("Aucun : pas de board de mise en prod, ton board fait tout.")
         if "deploy_board" in self.jira.pinned:
             return
         if not ranked:
@@ -296,6 +342,11 @@ class _Discovery:
             self.jira.deploy_board = ranked[0].id
         else:
             self._pick("deploy_board", "Board des mises en preprod/prod", ranked)
+
+    def _trace_boards(self, title: str, boards: list[Board]) -> None:
+        self._trace(title + " :")
+        for board in boards:
+            self._trace("  " + _with_evidence(board.name, self._evidence.get(board.id, "")))
 
     def _pick(self, field: str, question: str, boards: list[Board], none: str = "") -> None:
         """Choix d'un board par l'utilisateur, parmi les déduits ou cherché par son nom ; un
@@ -341,22 +392,22 @@ class _Discovery:
         discovery.guess_columns(self.jira, dev, deploy, self.environments)
 
     def _find_code_hosts(self) -> None:
-        """Le GitLab est un des hôtes vers lesquels pointent mes tickets : le token tranchera."""
-        if self.gitlab.url:
-            self.code_hosts = [self.gitlab.url]
-            return
+        """Le GitLab est un des hôtes vers lesquels pointent mes tickets, ou le remote git du
+        dossier courant ; celui de la config d'abord. Le token, puis l'activité, trancheront."""
         links = _parallel(
             lambda key: _quiet(lambda: self.tracker.dev_links(key), []),
             [i.key for i in self.issues[:5]],
         )
-        self.code_hosts = discovery.code_hosts([u for found in links for u in found], self.jira.url)
-        # Le repo git où l'on lance la commande pointe aussi vers le GitLab.
-        local = discovery.remote_hosts(self._remotes())
-        self.code_hosts += [h for h in local if h not in self.code_hosts]
+        hosts = discovery.code_hosts([u for found in links for u in found], self.jira.url)
         for issue, found in zip(self.issues, links):
-            for host in self.code_hosts:
+            for host in hosts:
                 if any(u.startswith(host + "/") for u in found):
                     self._sources.setdefault(host, issue.key)
+        local = discovery.remote_hosts(self._remotes())
+        for host in local:
+            self._sources.setdefault(host, "le remote git de ce dossier")
+        saved = [self.gitlab.url] if self.gitlab.url else []
+        self.code_hosts = list(dict.fromkeys(saved + hosts + local))
 
     def _board_columns(self, board: str) -> list[str]:
         """Colonnes configurées du board (un appel, mis en cache) ; tous les statuts sans board."""
@@ -397,6 +448,8 @@ class _Discovery:
     def _column(self, column: str, fields: list[str]) -> str:
         """« Vérifier technique · Après la RC » : l'intention de la colonne, puis son rôle."""
         intent = discovery.INTENTS.get(self.jira.intents.get(column, ""), "?")
+        if support := self._support.get(column):
+            intent += f" ({support[0]}/{support[1]} tickets)"
         role = discovery.role_of(self.jira, column, fields)
         return intent + (f" · {discovery.label(role)}" if role else "")
 
