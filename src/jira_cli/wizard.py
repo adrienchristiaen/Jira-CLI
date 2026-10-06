@@ -28,6 +28,8 @@ DONE = "✓ C'est bon"
 NO_ROLE = "Aucun rôle"
 NO_INTENT = "Rien de particulier"
 SAME_BOARD = "Le même board"
+OTHER_BOARD = "Autre board (chercher par son nom)"
+BOARDS = ("board", "deploy_board")
 NETWORK_ERRORS = (ApiError, requests.RequestException)
 
 
@@ -158,7 +160,8 @@ class _Discovery:
         # Tout ce qui se déduit est re-déduit : une ancienne déduction fausse ne doit pas
         # survivre. La correction finale reste là pour reprendre la main.
         j = self.jira
-        j.board = j.deploy_board = j.status_after_rc = j.status_after_final = ""
+        j.board, j.deploy_board = (getattr(j, f) if f in j.pinned else "" for f in BOARDS)
+        j.status_after_rc = j.status_after_final = ""
         j.rc_from_statuses, j.final_from_statuses = [], []
         j.status_after_deploy, j.intents = {}, {}
         self.issues = _quiet(lambda: self.tracker.search(self.jira.jql), [])
@@ -205,18 +208,9 @@ class _Discovery:
     def correct(self) -> None:
         before = (self.jira.board, self.jira.deploy_board)
         boards = self.team + self.deploy
-        if boards:
-            self.jira.board = _choose_board(
-                self.prompter, "Board de ton équipe", boards, self.jira.board
-            )
-            others = [b for b in boards if b.id != self.jira.board]
-            self.jira.deploy_board = _choose_board(
-                self.prompter,
-                "Board des mises en preprod/prod",
-                others,
-                self.jira.deploy_board,
-                SAME_BOARD,
-            )
+        self._pick("board", "Board de ton équipe", boards)
+        others = [b for b in boards if b.id != self.jira.board]
+        self._pick("deploy_board", "Board des mises en preprod/prod", others, SAME_BOARD)
         if (self.jira.board, self.jira.deploy_board) != before:  # autres boards : on re-déduit
             self.jira.rc_from_statuses, self.jira.status_after_rc = [], ""
             self.jira.status_after_deploy, self.jira.final_from_statuses = {}, []
@@ -271,14 +265,12 @@ class _Discovery:
         held = self._held(mine)
         team, sure = discovery.rank_team(mine, held)
         self.team = team
-        if team:
-            self.jira.board = (
-                team[0].id
-                if sure
-                else _one_board(
-                    self.prompter, "Board de ton équipe", team, self._team_evidence(held)
-                )
-            )
+        if team and "board" not in self.jira.pinned:
+            self._evidence = self._team_evidence(held)
+            if sure:
+                self.jira.board = team[0].id
+            else:
+                self._pick("board", "Board de ton équipe", team)
         done = self._history(self.jira.board)
         keys = discovery.foreign_links(
             [(i.key, i.links) for i in self.issues] + [(h.key, h.links) for h in done]
@@ -302,14 +294,42 @@ class _Discovery:
         }
         ranked, sure = discovery.rank_deploy([b for b in candidates if links[b.id]], links)
         self.deploy = ranked
+        if "deploy_board" in self.jira.pinned:
+            return
         if not ranked:
             self.jira.deploy_board = ""
         elif sure:
             self.jira.deploy_board = ranked[0].id
         else:
-            self.jira.deploy_board = _one_board(
-                self.prompter, "Board des mises en preprod/prod", ranked, self._evidence
-            )
+            self._pick("deploy_board", "Board des mises en preprod/prod", ranked)
+
+    def _pick(self, field: str, question: str, boards: list[Board], none: str = "") -> None:
+        """Choix d'un board par l'utilisateur, parmi les déduits ou cherché par son nom ; un
+        choix fait à la main est gardé tel quel aux init suivantes."""
+        current = getattr(self.jira, field)
+        items = ([none] if none else []) + [
+            _with_evidence(b.name, self._evidence.get(b.id, "")) for b in boards
+        ]
+        ids = ([""] if none else []) + [b.id for b in boards]
+        index = self.prompter.choose(
+            question, [*items, OTHER_BOARD], ids.index(current) if current in ids else 0
+        )
+        chosen = ids[index] if index < len(ids) else self._search_board()
+        if chosen is None:
+            return
+        setattr(self.jira, field, chosen)
+        if field not in self.jira.pinned:
+            self.jira.pinned.append(field)
+
+    def _search_board(self) -> str | None:
+        name = self.prompter.ask("Nom du board (ou une partie)")
+        found = _quiet(lambda: self.tracker.find_boards(name), []) if name else []
+        if not found:
+            self.prompter.explain(f"Aucun board ne contient « {name} ».")
+            return None
+        board = found[self.prompter.choose("Lequel ?", [b.name for b in found], 0)]
+        self.deploy.append(board)  # pour l'afficher sous son nom
+        return board.id
 
     def _team_evidence(self, held: dict[str, tuple[int, int]]) -> dict[str, str]:
         return {b: _evidence(h, 0, len(self.issues)) for b, h in held.items()}
@@ -448,13 +468,6 @@ def _quiet(call: Callable, fallback):
         return fallback
 
 
-def _one_board(prompter, question: str, boards: list[Board], evidence: dict[str, str]) -> str:
-    if len(boards) == 1:
-        return boards[0].id
-    items = [_with_evidence(b.name, evidence.get(b.id, "")) for b in boards]
-    return boards[prompter.choose(question, items, 0)].id
-
-
 def _with_evidence(name: str, evidence: str) -> str:
     return f"{name}  ({evidence})" if evidence else name
 
@@ -467,15 +480,6 @@ def _evidence(held: tuple[int, int] | None, links: int, mine: int) -> str:
     if links:
         parts.append(f"{links} tickets liés aux tiens")
     return " · ".join(parts)
-
-
-def _choose_board(
-    prompter, question: str, boards: list[Board], current: str, none: str = ""
-) -> str:
-    items = ([none] if none else []) + [b.name for b in boards]
-    ids = ([""] if none else []) + [b.id for b in boards]
-    index = prompter.choose(question, items, ids.index(current) if current in ids else 0)
-    return ids[index]
 
 
 def _ask_url(prompter, question: str, default: str) -> str:

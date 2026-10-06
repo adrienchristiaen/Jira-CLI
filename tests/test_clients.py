@@ -520,3 +520,12 @@ def test_board_issue_count_ignores_keys_jira_does_not_know():
     session = FakeSession({"/board/42/issue": FakeResponse({"total": 1, "issues": []})})
     JiraClient("https://jira", session).board_issue_count("42", ["MEP-1", "GONE-9"])
     assert session.calls[0][2]["params"]["validateQuery"] == "false"
+
+
+def test_find_boards_by_name():
+    page = {"values": [{"id": 77, "name": "Phenix Deployments"}], "isLast": True}
+    session = FakeSession({"/board": FakeResponse(page)})
+    assert JiraClient("https://jira", session).find_boards("Deploy") == [
+        Board("77", "Phenix Deployments")
+    ]
+    assert session.calls[0][2]["params"]["name"] == "Deploy"

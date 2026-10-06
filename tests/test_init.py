@@ -348,7 +348,8 @@ def test_deploy_board_is_asked_when_two_boards_hold_my_linked_tickets_equally():
     prompter, config = init([*answers, "gl", None], jira)
     assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
     offered = dict(prompter.offered)["Board des mises en preprod/prod"]
-    assert [o.split("  (")[0] for o in offered] == ["INCO", "Phenix Deployments (MEP/CAB)"]
+    names = [o.split("  (")[0] for o in offered]
+    assert names == ["INCO", "Phenix Deployments (MEP/CAB)", wizard.OTHER_BOARD]
 
 
 def test_history_is_read_only_for_the_chosen_boards():
@@ -460,3 +461,27 @@ def test_deploy_board_is_found_through_links_of_done_tickets():
     prompter, config = init(["https://jira.acme.fr", "pat", "gl", None], jira)
     assert (config.jira.board, config.jira.deploy_board) == ("4922", "77")
     assert "Board des mises en preprod/prod" not in questions(prompter)
+
+
+def test_a_board_not_deduced_can_be_found_by_name_and_is_kept_next_time(home):
+    # Aucun ticket ne relie mes tickets au board MEP : je le cherche par son nom.
+    mep = Board("77", "Phenix Deployments (MEP/CAB)")
+    jira = tracker(
+        issue=Issue("PROJ-123", "Paiements", "En cours"),
+        histories={"4922": [TEAM_LIFE], "77": [MEP_LIFE]},
+        named_boards=[mep],
+    )
+    answers = [
+        "https://jira.acme.fr",
+        "pat",
+        "gl",
+        None,
+        False,
+    ]  # colonnes ok ; « Tout est juste ? » non
+    answers += [None, "Autre board", "Deploy", "Phenix"]  # équipe ok ; MEP cherché par nom
+    answers += [None] * 20
+    _, config = init(answers, jira)
+    assert config.jira.deploy_board == "77"
+    assert jira.board_searches == ["Deploy"]
+    prompter, again = init([None, None, "gl", None], jira)
+    assert again.jira.deploy_board == "77"  # le choix fait à la main n'est pas re-déduit

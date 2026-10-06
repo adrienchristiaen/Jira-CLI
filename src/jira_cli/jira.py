@@ -88,6 +88,12 @@ class JiraClient:
                     break
         return list(found.values())
 
+    def find_boards(self, name: str) -> list[Board]:
+        """Boards dont le nom contient `name` : pour celui qu'aucun fait ne désigne."""
+        params = {"name": name, "maxResults": 50}
+        page = check(self._session.get(f"{self._agile}/board", params=params)).json()
+        return [Board(str(b["id"]), b["name"]) for b in page["values"]]
+
     def board_issue_count(self, board: str, keys: list[str] | None = None) -> int:
         """Tickets du board ; parmi `keys` seulement si donné. Un seul appel, sans les tickets."""
         params: dict = {"maxResults": 0, "fields": "key"}
