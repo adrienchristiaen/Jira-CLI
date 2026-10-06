@@ -45,6 +45,8 @@ class JiraConfig:
     status_after_deploy: dict[str, str] = field(default_factory=dict)
     # Ce qu'on fait dans chaque colonne utilisée : {WIP: develop, A installer: install…}.
     intents: dict[str, str] = field(default_factory=dict)
+    # Boards choisis à la main ("board", "deploy_board") : plus re-déduits aux init suivantes.
+    pinned: list[str] = field(default_factory=list)
 
 
 @dataclass

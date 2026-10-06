@@ -36,6 +36,12 @@ class FakeTracker:
     history_boards: list[str] = field(default_factory=list)
     cloud: bool = False
     board_tickets: dict[str, list[str]] = field(default_factory=dict)  # clés présentes par board
+    named_boards: list[Board] = field(default_factory=list)  # trouvés par leur nom
+    board_searches: list[str] = field(default_factory=list)
+
+    def find_boards(self, name: str) -> list[Board]:
+        self.board_searches.append(name)
+        return self.named_boards
 
     def board_issue_count(self, board: str, keys: list[str] | None = None) -> int:
         """Tickets du board ; parmi `keys` seulement si donné."""

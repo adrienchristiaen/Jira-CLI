@@ -245,28 +245,20 @@ def foreign_links(tickets: Iterable[tuple[str, Iterable[str]]]) -> list[str]:
     return list(dict.fromkeys(found))
 
 
-def rank_team(boards: list[Board], held: dict[str, tuple[int, int]]) -> tuple[list[Board], bool]:
-    """Boards de l'équipe : celui qui porte le plus de mes tickets en tête, à égalité le plus
-    petit (le plus spécifique) ; `held` = {board: (mes tickets, tickets en tout)}. Et si le
-    premier s'impose : il porte au moins un de mes tickets et bat strictement le suivant."""
+def rank_boards(
+    boards: list[Board], counts: dict[str, tuple[int, int]], size: int
+) -> tuple[list[Board], bool]:
+    """Boards qui portent au moins un des `size` tickets cherchés, celui qui leur ressemble le
+    plus en tête ; `counts` = {board: (tickets cherchés qu'il porte, tickets en tout)}. La
+    ressemblance (Jaccard) préfère un board précis à un board géant qui porte tout. Et si le
+    premier s'impose : seul, ou strictement plus ressemblant que le suivant."""
 
-    def score(board: Board) -> tuple[int, int]:
-        mine, total = held.get(board.id, (0, 0))
-        return -mine, total
+    def similarity(board: Board) -> float:
+        held, total = counts.get(board.id, (0, 0))
+        return held / max(total + size - held, 1)
 
-    ranked = sorted(boards, key=score)
-    first = held.get(ranked[0].id, (0, 0))[0] if ranked else 0
-    sure = len(ranked) == 1 or (
-        len(ranked) > 1 and first > 0 and score(ranked[0]) < score(ranked[1])
+    ranked = sorted(
+        (b for b in boards if counts.get(b.id, (0, 0))[0]), key=similarity, reverse=True
     )
-    return ranked, sure
-
-
-def rank_deploy(candidates: list[Board], links: dict[str, int]) -> tuple[list[Board], bool]:
-    """Boards de mises en prod, celui qui porte le plus de tickets liés aux miens en tête ;
-    et si ce premier s'impose (seul, ou strictement plus de liens que le suivant)."""
-    ranked = sorted(candidates, key=lambda b: -links.get(b.id, 0))
-    sure = len(ranked) == 1 or (
-        len(ranked) > 1 and links.get(ranked[0].id, 0) > links.get(ranked[1].id, 0)
-    )
+    sure = len(ranked) == 1 or (len(ranked) > 1 and similarity(ranked[0]) > similarity(ranked[1]))
     return ranked, sure

@@ -28,6 +28,8 @@ DONE = "✓ C'est bon"
 NO_ROLE = "Aucun rôle"
 NO_INTENT = "Rien de particulier"
 SAME_BOARD = "Le même board"
+OTHER_BOARD = "Autre board (chercher par son nom)"
+BOARDS = ("board", "deploy_board")
 NETWORK_ERRORS = (ApiError, requests.RequestException)
 
 
@@ -158,7 +160,8 @@ class _Discovery:
         # Tout ce qui se déduit est re-déduit : une ancienne déduction fausse ne doit pas
         # survivre. La correction finale reste là pour reprendre la main.
         j = self.jira
-        j.board = j.deploy_board = j.status_after_rc = j.status_after_final = ""
+        j.board, j.deploy_board = (getattr(j, f) if f in j.pinned else "" for f in BOARDS)
+        j.status_after_rc = j.status_after_final = ""
         j.rc_from_statuses, j.final_from_statuses = [], []
         j.status_after_deploy, j.intents = {}, {}
         self.issues = _quiet(lambda: self.tracker.search(self.jira.jql), [])
@@ -205,18 +208,9 @@ class _Discovery:
     def correct(self) -> None:
         before = (self.jira.board, self.jira.deploy_board)
         boards = self.team + self.deploy
-        if boards:
-            self.jira.board = _choose_board(
-                self.prompter, "Board de ton équipe", boards, self.jira.board
-            )
-            others = [b for b in boards if b.id != self.jira.board]
-            self.jira.deploy_board = _choose_board(
-                self.prompter,
-                "Board des mises en preprod/prod",
-                others,
-                self.jira.deploy_board,
-                SAME_BOARD,
-            )
+        self._pick("board", "Board de ton équipe", boards)
+        others = [b for b in boards if b.id != self.jira.board]
+        self._pick("deploy_board", "Board des mises en preprod/prod", others, SAME_BOARD)
         if (self.jira.board, self.jira.deploy_board) != before:  # autres boards : on re-déduit
             self.jira.rc_from_statuses, self.jira.status_after_rc = [], ""
             self.jira.status_after_deploy, self.jira.final_from_statuses = {}, []
@@ -263,22 +257,22 @@ class _Discovery:
     # --- déductions ---
 
     def _find_boards(self) -> None:
-        """Board de l'équipe : celui qui porte le plus de mes tickets. Board des mises en prod :
-        celui qui porte le plus de tickets d'autres projets liés aux miens, en cours ou terminés
-        (un ticket en cours n'a souvent pas encore de ticket MEP). Aucun nom n'est lu."""
+        """Board de l'équipe : celui qui ressemble le plus à mes tickets. Board des mises en prod :
+        celui qui ressemble le plus aux tickets d'autres projets liés aux miens, en cours ou
+        terminés (un ticket en cours n'a souvent pas encore de ticket MEP). Aucun nom n'est lu."""
         own, _ = discovery.projects(self.issues)
         mine = _quiet(lambda: self.tracker.boards(own), []) if own else []
-        held = self._held(mine)
-        team, sure = discovery.rank_team(mine, held)
+        held = self._counts(mine, [i.key for i in self.issues])
+        self._evidence = {
+            b: _evidence(h, "{n} de tes {size} tickets", len(self.issues)) for b, h in held.items()
+        }
+        team, sure = discovery.rank_boards(mine, held, len(self.issues))
         self.team = team
-        if team:
-            self.jira.board = (
-                team[0].id
-                if sure
-                else _one_board(
-                    self.prompter, "Board de ton équipe", team, self._team_evidence(held)
-                )
-            )
+        if team and "board" not in self.jira.pinned:
+            if sure:
+                self.jira.board = team[0].id
+            else:
+                self._pick("board", "Board de ton équipe", team)
         done = self._history(self.jira.board)
         keys = discovery.foreign_links(
             [(i.key, i.links) for i in self.issues] + [(h.key, h.links) for h in done]
@@ -287,43 +281,59 @@ class _Discovery:
         others = [b for b in _quiet(lambda: self.tracker.boards(linked), []) if b not in mine]
         others = others if linked else []
         candidates = [b for b in mine + others if b.id != self.jira.board] if keys else []
-        links = dict(
-            zip(
-                (b.id for b in candidates),
-                _parallel(
-                    lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id, keys), 0),
-                    candidates,
-                ),
+        links = self._counts(candidates, keys)
+        for board, found in links.items():
+            self._evidence[board] = _evidence(
+                found, "{n} des {size} tickets liés aux tiens", len(keys)
             )
-        )
-        self._evidence = self._team_evidence(held) | {
-            b.id: _evidence(held.get(b.id), links.get(b.id, 0), len(self.issues))
-            for b in candidates
-        }
-        ranked, sure = discovery.rank_deploy([b for b in candidates if links[b.id]], links)
+        ranked, sure = discovery.rank_boards(candidates, links, len(keys))
         self.deploy = ranked
+        if "deploy_board" in self.jira.pinned:
+            return
         if not ranked:
             self.jira.deploy_board = ""
         elif sure:
             self.jira.deploy_board = ranked[0].id
         else:
-            self.jira.deploy_board = _one_board(
-                self.prompter, "Board des mises en preprod/prod", ranked, self._evidence
-            )
+            self._pick("deploy_board", "Board des mises en preprod/prod", ranked)
 
-    def _team_evidence(self, held: dict[str, tuple[int, int]]) -> dict[str, str]:
-        return {b: _evidence(h, 0, len(self.issues)) for b, h in held.items()}
+    def _pick(self, field: str, question: str, boards: list[Board], none: str = "") -> None:
+        """Choix d'un board par l'utilisateur, parmi les déduits ou cherché par son nom ; un
+        choix fait à la main est gardé tel quel aux init suivantes."""
+        current = getattr(self.jira, field)
+        items = ([none] if none else []) + [
+            _with_evidence(b.name, self._evidence.get(b.id, "")) for b in boards
+        ]
+        ids = ([""] if none else []) + [b.id for b in boards]
+        index = self.prompter.choose(
+            question, [*items, OTHER_BOARD], ids.index(current) if current in ids else 0
+        )
+        chosen = ids[index] if index < len(ids) else self._search_board()
+        if chosen is None:
+            return
+        setattr(self.jira, field, chosen)
+        if field not in self.jira.pinned:
+            self.jira.pinned.append(field)
 
-    def _held(self, boards: list[Board]) -> dict[str, tuple[int, int]]:
-        """Par board : (combien de mes tickets il porte, combien de tickets en tout)."""
-        keys = [i.key for i in self.issues]
-        if not keys:
+    def _search_board(self) -> str | None:
+        name = self.prompter.ask("Nom du board (ou une partie)")
+        found = _quiet(lambda: self.tracker.find_boards(name), []) if name else []
+        if not found:
+            self.prompter.explain(f"Aucun board ne contient « {name} ».")
+            return None
+        board = found[self.prompter.choose("Lequel ?", [b.name for b in found], 0)]
+        self.deploy.append(board)  # pour l'afficher sous son nom
+        return board.id
+
+    def _counts(self, boards: list[Board], keys: list[str]) -> dict[str, tuple[int, int]]:
+        """Par board : (combien des tickets `keys` il porte, combien de tickets en tout)."""
+        if not keys or not boards:
             return {}
-        mine = _parallel(
+        held = _parallel(
             lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id, keys), 0), boards
         )
         total = _parallel(lambda b: _quiet(lambda: self.tracker.board_issue_count(b.id), 0), boards)
-        return {b.id: (m, t) for b, m, t in zip(boards, mine, total)}
+        return {b.id: (h, t) for b, h, t in zip(boards, held, total)}
 
     def _guess_columns(self) -> None:
         dev = self._statuses(self.jira.board)
@@ -448,34 +458,15 @@ def _quiet(call: Callable, fallback):
         return fallback
 
 
-def _one_board(prompter, question: str, boards: list[Board], evidence: dict[str, str]) -> str:
-    if len(boards) == 1:
-        return boards[0].id
-    items = [_with_evidence(b.name, evidence.get(b.id, "")) for b in boards]
-    return boards[prompter.choose(question, items, 0)].id
-
-
 def _with_evidence(name: str, evidence: str) -> str:
     return f"{name}  ({evidence})" if evidence else name
 
 
-def _evidence(held: tuple[int, int] | None, links: int, mine: int) -> str:
-    """« 3 de tes 4 tickets · 120 tickets · 2 tickets liés » : ce qui a guidé le choix."""
-    parts = []
-    if held:
-        parts += [f"{held[0]} de tes {mine} tickets", f"{held[1]} tickets"]
-    if links:
-        parts.append(f"{links} tickets liés aux tiens")
-    return " · ".join(parts)
-
-
-def _choose_board(
-    prompter, question: str, boards: list[Board], current: str, none: str = ""
-) -> str:
-    items = ([none] if none else []) + [b.name for b in boards]
-    ids = ([""] if none else []) + [b.id for b in boards]
-    index = prompter.choose(question, items, ids.index(current) if current in ids else 0)
-    return ids[index]
+def _evidence(held: tuple[int, int] | None, text: str, size: int) -> str:
+    """« 5 de tes 18 tickets · 3421 tickets en tout » : ce qui a guidé le choix."""
+    if not held:
+        return ""
+    return f"{text.format(n=held[0], size=size)} · {held[1]} tickets en tout"
 
 
 def _ask_url(prompter, question: str, default: str) -> str:

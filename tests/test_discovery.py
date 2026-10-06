@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from jira_cli import discovery
 from jira_cli.config import JiraConfig
-from jira_cli.models import CodeEvent, History, Issue, Stay
+from jira_cli.models import Board, CodeEvent, History, Issue, Stay
 
 ENVS = ["env1", "env2"]
 # Noms opaques exprès : seules les intentions apprises comptent, jamais les noms.
@@ -197,3 +197,18 @@ def test_git_remotes_give_their_host():
         "ssh://git@other.fr:2222/x.git",
     ]
     assert discovery.remote_hosts(remotes) == ["https://git.acme.fr", "https://other.fr"]
+
+
+def test_rank_boards_prefers_the_board_that_looks_most_like_the_tickets():
+    # Chiffres réels d'Adrien : un board géant porte plus de ses tickets, mais le board de
+    # l'équipe leur ressemble bien plus (5 sur 3421 contre 16 sur 38110).
+    boards = [Board("1", "Géant"), Board("2", "Équipe"), Board("3", "Voisin")]
+    counts = {"1": (16, 38110), "2": (5, 3421), "3": (5, 5387)}
+    ranked, sure = discovery.rank_boards(boards, counts, 18)
+    assert [b.id for b in ranked] == ["2", "3", "1"] and sure
+
+
+def test_rank_boards_is_unsure_on_a_tie_and_ignores_boards_holding_none():
+    boards = [Board("1", "A"), Board("2", "B"), Board("3", "C")]
+    ranked, sure = discovery.rank_boards(boards, {"1": (2, 10), "2": (2, 10), "3": (0, 1)}, 4)
+    assert [b.id for b in ranked] == ["1", "2"] and not sure
