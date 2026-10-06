@@ -533,3 +533,26 @@ def test_a_saved_gitlab_without_activity_gives_way_to_the_one_tickets_point_to(h
     )
     assert config.gitlab.url == "https://gitlab.acme.fr"
     assert "URL GitLab" not in questions(prompter)
+
+
+class RefusingHost(FakeHost):
+    def whoami(self) -> str:
+        raise ApiError("GET https://x/api/v4/user -> 404", 404)
+
+
+def test_a_gitlab_url_with_a_group_path_is_split_into_server_and_group():
+    def gitlab(config, token):
+        return FakeHost(events=EVENTS) if config.url == "https://gitlab.com" else RefusingHost()
+
+    answers = ["https://jira.acme.fr", "pat", "https://gitlab.com/agilefabric/france/", "gl", None]
+    prompter = ScriptedPrompter(answers)
+    config = wizard.run_init(prompter, lambda c, t: tracker(links=[]), gitlab, lambda: [])
+    assert (config.gitlab.url, config.gitlab.group) == ("https://gitlab.com", "agilefabric")
+
+
+def test_why_gitlab_refused_is_shown():
+    answers = ["https://jira.acme.fr", "pat", "gl", "https://gitlab.acme.fr", "gl"]
+    prompter = ScriptedPrompter([*answers, None, None, None])
+    hosts = iter([RefusingHost(), FakeHost(events=EVENTS)])
+    wizard.run_init(prompter, lambda c, t: tracker(), lambda c, t: next(hosts), lambda: [])
+    assert any("404" in m for m in prompter.messages if m.startswith("ERREUR"))

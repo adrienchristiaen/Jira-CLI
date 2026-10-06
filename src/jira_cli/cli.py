@@ -13,6 +13,7 @@ from .versioning import BUMPS
 
 
 def main(argv: list[str] | None = None) -> int:
+    _trust_system_certificates()
     parser = argparse.ArgumentParser(prog="jira-cli", description=__doc__)
     parser.add_argument(
         "--dry-run",
@@ -73,3 +74,13 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _trust_system_certificates() -> None:
+    """HTTPS vérifié avec les certificats du système (Windows, macOS, Linux), là où une
+    entreprise installe les siens, plutôt qu'avec la seule liste embarquée par requests."""
+    try:
+        import truststore
+    except ImportError:  # installation ancienne : REQUESTS_CA_BUNDLE reste possible
+        return
+    truststore.inject_into_ssl()

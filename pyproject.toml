@@ -15,6 +15,7 @@ dependencies = [
     "questionary>=2.0",
     "rich>=13",
     "textual>=1.0",
+    "truststore>=0.9",  # certificats du système : ceux qu'une entreprise y installe
     "tomli>=2; python_version < '3.11'",
 ]
 

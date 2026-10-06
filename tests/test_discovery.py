@@ -212,3 +212,23 @@ def test_rank_boards_is_unsure_on_a_tie_and_ignores_boards_holding_none():
     boards = [Board("1", "A"), Board("2", "B"), Board("3", "C")]
     ranked, sure = discovery.rank_boards(boards, {"1": (2, 10), "2": (2, 10), "3": (0, 1)}, 4)
     assert [b.id for b in ranked] == ["1", "2"] and not sure
+
+
+def test_gitlab_candidates_split_a_pasted_url_into_server_and_group():
+    assert discovery.gitlab_candidates("https://gitlab.com/agilefabric/france/phenix/") == [
+        ("https://gitlab.com", "agilefabric"),
+        ("https://gitlab.com/agilefabric", "france"),
+        ("https://gitlab.com/agilefabric/france", "phenix"),
+        ("https://gitlab.com/agilefabric/france/phenix", ""),
+    ]
+
+
+def test_namespaces_are_the_top_group_of_links_and_remotes():
+    found = discovery.namespaces(
+        [
+            "https://gitlab.com/agilefabric/france/phenix/app/-/merge_requests/7",
+            "git@gitlab.com:agilefabric/france/kube.git",
+            "https://gitlab.acme.fr/team/app.git",
+        ]
+    )
+    assert found == {"https://gitlab.com": "agilefabric", "https://gitlab.acme.fr": "team"}

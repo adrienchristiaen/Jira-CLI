@@ -46,7 +46,7 @@ def _jira_client(jira: JiraConfig, token: str) -> JiraClient:
 
 
 def _gitlab_client(gitlab: GitLabConfig, token: str) -> GitLabClient:
-    return GitLabClient(gitlab.url, gitlab_session(gitlab, token))
+    return GitLabClient(gitlab.url, gitlab_session(gitlab, token), group=gitlab.group)
 
 
 def _git_remotes() -> list[str]:
@@ -83,25 +83,29 @@ def run_init(
     found = _Discovery(prompter, jira, gitlab, tracker, environments, remotes, explain)
     found.run()
     found.learn(_connect_gitlab(prompter, gitlab, found.code_hosts, store, gitlab_client))
-    others = [h for h in found.code_hosts if h != gitlab.url]
+    others = [c for c in found.code_hosts if c[0] != gitlab.url]
     while found.learnt_from and not found.active:
         prompter.explain(
             f"Aucune activité sur {gitlab.url} pour {found.learnt_from} tickets terminés : "
             "ce n'est sans doute pas ton GitLab."
         )
         if not others:  # plus de candidat : on demande, une fois
-            gitlab.url = _ask_url(prompter, "URL GitLab", gitlab.url)
-            found.learn(_connect_gitlab(prompter, gitlab, [gitlab.url], store, gitlab_client))
+            found.learn(
+                _connect_gitlab(
+                    prompter, gitlab, _ask_gitlab(prompter, gitlab), store, gitlab_client
+                )
+            )
             break
         found.learn(_connect_gitlab(prompter, gitlab, others, store, gitlab_client))
         # Les hôtes d'avant celui retenu ont refusé le token : on ne garde que ceux d'après.
-        others = others[others.index(gitlab.url) + 1 :] if gitlab.url in others else []
+        tried = [url for url, _ in others]
+        others = others[tried.index(gitlab.url) + 1 :] if gitlab.url in tried else []
     prompter.info(found.summary())
     if not prompter.confirm("Tout est juste ?", True):
-        url = gitlab.url
+        before = (gitlab.url, gitlab.group)
         found.correct()
-        if gitlab.url != url:
-            _connect_gitlab(prompter, gitlab, [gitlab.url], store, gitlab_client)
+        if (gitlab.url, gitlab.group) != before:
+            _connect_gitlab(prompter, gitlab, [(gitlab.url, gitlab.group)], store, gitlab_client)
     config = Config(jira=jira, gitlab=gitlab, repos=repos)
     path = config_module.save(config)
     prompter.success(f"Configuration écrite dans {path} (tokens chiffrés à côté).")
@@ -184,7 +188,7 @@ class _Discovery:
         self.issues: list[Issue] = []
         self.team: list[Board] = []
         self.deploy: list[Board] = []
-        self.code_hosts: list[str] = []  # hôtes cités par les liens de mes tickets
+        self.code_hosts: list[tuple[str, str]] = []  # (serveur, groupe) candidats
         self._columns: dict[str, list[str]] = {}  # flux des boards retenus
         self._config: dict[str, list[str]] = {}  # colonnes configurées de chaque board
         self._histories: dict[str, list[History]] = {}  # vie des derniers tickets terminés
@@ -258,7 +262,7 @@ class _Discovery:
                 self.learn(self._host)
         for board, fields in self._boards():
             self._correct_columns(board, fields)
-        self.gitlab.url = _ask_url(self.prompter, "URL GitLab", self.gitlab.url)
+        self.gitlab.url, self.gitlab.group = _ask_gitlab(self.prompter, self.gitlab)[0]
 
     def summary(self) -> str:
         lines = []
@@ -403,11 +407,16 @@ class _Discovery:
             for host in hosts:
                 if any(u.startswith(host + "/") for u in found):
                     self._sources.setdefault(host, issue.key)
-        local = discovery.remote_hosts(self._remotes())
+        remotes = self._remotes()
+        local = discovery.remote_hosts(remotes)
         for host in local:
             self._sources.setdefault(host, "le remote git de ce dossier")
+        groups = discovery.namespaces([u for found in links for u in found] + remotes)
         saved = [self.gitlab.url] if self.gitlab.url else []
-        self.code_hosts = list(dict.fromkeys(saved + hosts + local))
+        self.code_hosts = [
+            (host, (self.gitlab.group if host == self.gitlab.url else "") or groups.get(host, ""))
+            for host in dict.fromkeys(saved + hosts + local)
+        ]
 
     def _board_columns(self, board: str) -> list[str]:
         """Colonnes configurées du board (un appel, mis en cache) ; tous les statuts sans board."""
@@ -473,25 +482,49 @@ class _Discovery:
             discovery.assign(self.jira, column, field, columns, self.environments)
 
 
-def _connect_gitlab(prompter, gitlab: GitLabConfig, hosts: list[str], store, gitlab_client):
-    """Le token GitLab, essayé sur chaque hôte candidat : celui qui l'accepte est le GitLab."""
+def _connect_gitlab(prompter, gitlab: GitLabConfig, candidates, store, gitlab_client):
+    """Le token GitLab, essayé sur chaque (serveur, groupe) candidat : celui qui l'accepte est
+    le GitLab. Sinon on montre pourquoi (token, adresse, certificat) et on redemande."""
     while True:
-        if not hosts:
+        if not candidates:
             prompter.explain("Aucun ticket ne pointe vers un GitLab : donne son adresse.")
-            hosts = [_ask_url(prompter, "URL GitLab", gitlab.url)]
+            candidates = _ask_gitlab(prompter, gitlab)
         token = _ask_token(prompter, "Token GitLab", store.get("gitlab"))
-        for url in hosts:
-            host = gitlab_client(GitLabConfig(url, gitlab.auth), token)
+        errors = []
+        for url, group in candidates:
+            host = gitlab_client(GitLabConfig(url, gitlab.auth, group), token)
             try:
                 who = host.whoami()
-            except NETWORK_ERRORS:
+            except NETWORK_ERRORS as error:
+                errors.append(_why(error))
                 continue
-            gitlab.url = url
-            prompter.success(f"Connecté à GitLab ({url}) en tant que {who}")
+            gitlab.url, gitlab.group = url, group
+            where = f"{url}, groupe {group}" if group else url
+            prompter.success(f"Connecté à GitLab ({where}) en tant que {who}")
             store.set("gitlab", token)
             return host
-        prompter.error("Connexion à GitLab impossible avec ce token : " + ", ".join(hosts))
-        hosts = []
+        prompter.error("Connexion à GitLab impossible :")
+        for error in dict.fromkeys(errors):
+            prompter.error("  " + error)
+        candidates = []
+
+
+def _ask_gitlab(prompter, gitlab: GitLabConfig) -> list[tuple[str, str]]:
+    """L'adresse que tu ouvres dans ton navigateur, groupe compris (gitlab.com/ma-societe)."""
+    current = f"{gitlab.url}/{gitlab.group}" if gitlab.group else gitlab.url
+    return discovery.gitlab_candidates(_ask_url(prompter, "URL GitLab", current))
+
+
+def _why(error: Exception) -> str:
+    """Une ligne qui dit quoi faire : certificat d'entreprise, token, ou l'erreur telle quelle."""
+    if isinstance(error, requests.exceptions.SSLError):
+        return (
+            f"certificat refusé ({error.request.url if error.request else ''}) : le certificat de "
+            "ton entreprise doit être dans le magasin du système, ou indiqué par REQUESTS_CA_BUNDLE."
+        )
+    if getattr(error, "status", None) in (401, 403):
+        return f"token refusé : {error}"
+    return str(error)
 
 
 # --- briques ---
