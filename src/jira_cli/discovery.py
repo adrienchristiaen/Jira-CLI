@@ -136,12 +136,24 @@ def learn_intents(
 ) -> dict[str, str]:
     """Intention de chaque colonne d'après ce qui se passe pendant que les tickets y sont,
     jamais d'après son nom : la plus fréquente sur les tickets terminés l'emporte."""
+    return {status: intent for status, (intent, _, _) in intent_votes(histories, events).items()}
+
+
+def intent_votes(
+    histories: Iterable[History], events: dict[str, list[CodeEvent]]
+) -> dict[str, tuple[str, int, int]]:
+    """Par colonne parlante : (intention gagnante, tickets qui la montrent, tickets passés par
+    la colonne) ; la preuve affichée à côté de chaque colonne."""
     votes: dict[str, Counter] = {}
     for history in histories:
         for status, intent in _stay_intents(history, events.get(history.key, [])):
             votes.setdefault(status, Counter())[intent] += 1
-    learnt = {status: counter.most_common(1)[0][0] for status, counter in votes.items()}
-    return {status: intent for status, intent in learnt.items() if intent}
+    found = {}
+    for status, counter in votes.items():
+        intent, count = counter.most_common(1)[0]
+        if intent:
+            found[status] = (intent, count, sum(counter.values()))
+    return found
 
 
 def _stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, str]]:

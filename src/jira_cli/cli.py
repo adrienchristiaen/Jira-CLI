@@ -20,7 +20,12 @@ def main(argv: list[str] | None = None) -> int:
         help="dashboard : les actions affichent leur plan sans rien lancer",
     )
     commands = parser.add_subparsers(dest="command")
-    commands.add_parser("init", help="configure Jira, GitLab et les tokens (chiffrés en local)")
+    init = commands.add_parser(
+        "init", help="configure Jira, GitLab et les tokens (chiffrés en local)"
+    )
+    init.add_argument(
+        "--explain", action="store_true", help="affiche chaque déduction avec ses preuves"
+    )
     release = commands.add_parser(
         "release", help="prépare et lance la release d'un ticket (RC, ou finale avec --final)"
     )
@@ -51,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
 
             return dashboard.run(args.dry_run)
         if args.command == "init":
-            wizard.run_init(prompter)
+            wizard.run_init(prompter, explain=args.explain)
             return 0
         ctx = actions.connect()
         if args.command == "deploy":

@@ -215,17 +215,12 @@ def test_summary_shows_each_board_with_its_columns_and_their_role():
     assert "RC" not in deploy  # pas de RC sur le board des mises en prod
 
 
-def test_role_not_found_opens_the_columns_of_that_board():
+def test_role_not_found_is_shown_in_the_summary_and_corrected_there():
     statuses = {"4922": ["Backlog", "Fait", "En revue"], "77": DEPLOY}  # rien après la revue
-    answers = ["https://jira.acme.fr", "pat", "gl", "Fait", None, "Après la RC", None, None]
+    answers = ["https://jira.acme.fr", "pat", "gl", False, None, None]  # non ; mêmes boards
+    answers += ["Fait", None, "Après la RC", None, None, None]  # colonne, intention, rôle
     prompter, config = init(answers, tracker(board_statuses=statuses))
-    assert questions(prompter)[3:8] == [
-        "Colonne à corriger · Squad Paiement",
-        "À quoi sert « Fait » ?",
-        "Rôle de « Fait »",
-        "Colonne à corriger · Squad Paiement",
-        "Tout est juste ?",
-    ]
+    assert questions(prompter)[3] == "Tout est juste ?"
     assert any("Après la RC" in m for m in prompter.messages if "pas trouvé" in m)
     assert config.jira.status_after_rc == "Fait"
 
@@ -475,9 +470,8 @@ def test_a_board_not_deduced_can_be_found_by_name_and_is_kept_next_time(home):
         "https://jira.acme.fr",
         "pat",
         "gl",
-        None,
         False,
-    ]  # colonnes ok ; « Tout est juste ? » non
+    ]  # « Tout est juste ? » non
     answers += [None, "Autre board", "Deploy", "Phenix"]  # équipe ok ; MEP cherché par nom
     answers += [None] * 20
     _, config = init(answers, jira)
@@ -485,3 +479,57 @@ def test_a_board_not_deduced_can_be_found_by_name_and_is_kept_next_time(home):
     assert jira.board_searches == ["Deploy"]
     prompter, again = init([None, None, "gl", None], jira)
     assert again.jira.deploy_board == "77"  # le choix fait à la main n'est pas re-déduit
+
+
+def test_boards_are_found_from_recent_tickets_too():
+    jira = tracker()
+    init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    assert "assignee was currentUser() ORDER BY updated DESC" in jira.searches
+
+
+def test_missing_columns_are_shown_once_in_the_summary_not_asked_one_by_one():
+    jira = tracker(histories={"4922": [], "77": []})  # aucun historique : rien d'appris
+    prompter, _ = init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    assert not [q for q in questions(prompter) if q.startswith("Colonne à corriger")]
+    assert any("pas trouvé" in m for m in prompter.messages)
+
+
+def test_a_gitlab_without_any_activity_is_questioned():
+    quiet = FakeHost(events={})
+    answers = ["https://jira.acme.fr", "pat", "gl", "https://gitlab.acme.fr", None, None]
+    prompter, config = init(answers, gitlab=quiet)
+    assert "URL GitLab" in questions(prompter)
+    assert config.gitlab.url == "https://gitlab.acme.fr"
+    assert any("Aucune activité" in m for m in prompter.messages)
+
+
+def test_explain_shows_every_board_with_its_numbers():
+    prompter = ScriptedPrompter(["https://jira.acme.fr", "pat", "gl", None])
+    jira = tracker()
+    wizard.run_init(
+        prompter, lambda c, t: jira, lambda c, t: FakeHost(events=EVENTS), lambda: [], explain=True
+    )
+    assert any("Squad Paiement" in m and "tickets en tout" in m for m in prompter.messages)
+
+
+def test_summary_shows_how_many_tickets_back_each_column():
+    prompter, _ = init(["https://jira.acme.fr", "pat", "gl", None])
+    assert any("1/1 tickets" in m for m in prompter.messages)
+
+
+def test_a_saved_gitlab_without_activity_gives_way_to_the_one_tickets_point_to(home):
+    old = JiraConfig("https://jira.acme.fr")
+    config_module.save(Config(old, GitLabConfig("https://gitlab.com"), {}))
+    TokenStore(home).set("jira", "j")
+    TokenStore(home).set("gitlab", "g")
+    hosts = {"https://gitlab.com": FakeHost(events={})}
+    jira = tracker()
+    prompter = ScriptedPrompter([None] * 10)
+    config = wizard.run_init(
+        prompter,
+        lambda c, t: jira,
+        lambda c, t: hosts.get(c.url) or FakeHost(events=EVENTS),
+        lambda: [],
+    )
+    assert config.gitlab.url == "https://gitlab.acme.fr"
+    assert "URL GitLab" not in questions(prompter)
