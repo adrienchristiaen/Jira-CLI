@@ -171,7 +171,7 @@ def intent_votes(
     la colonne) ; la preuve affichée à côté de chaque colonne."""
     votes: dict[str, Counter] = {}
     for history in histories:
-        for status, intent in _stay_intents(history, events.get(history.key, [])):
+        for status, intent in stay_intents(history, events.get(history.key, [])):
             votes.setdefault(status, Counter())[intent] += 1
     found = {}
     for status, counter in votes.items():
@@ -181,7 +181,7 @@ def intent_votes(
     return found
 
 
-def _stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, str]]:
+def stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, str]]:
     """(colonne, intention) pour chaque passage du ticket ; vide quand rien ne parle.
 
     La MR du code mergée : on release. Une MR dans un autre projet : la première installe,
@@ -192,7 +192,7 @@ def _stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, 
     code = min(events, key=lambda e: e.at).project if events else ""  # le dev commence là
     developer, installed, reviewed, found = "", False, False, []
     for stay in history.stays:
-        inside = [e for e in events if _during(e.at, stay)]
+        inside = [e for e in events if during(e.at, stay)]
         kinds = {e.kind for e in inside if e.project == code}
         if stay.end is None:
             intent = "done"
@@ -212,7 +212,7 @@ def _stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, 
     return found
 
 
-def _during(moment: datetime, stay: Stay) -> bool:
+def during(moment: datetime, stay: Stay) -> bool:
     return (
         stay.start is not None and stay.start <= moment and (stay.end is None or moment < stay.end)
     )
@@ -280,6 +280,27 @@ def foreign_links(tickets: Iterable[tuple[str, Iterable[str]]]) -> list[str]:
     """Tickets d'un autre projet liés à ces (clé, liens) : tickets MEP, CAB…"""
     found = [k for key, links in tickets for k in links if _project(k) != _project(key)]
     return list(dict.fromkeys(found))
+
+
+ACTIVE = "active"  # état d'un sprint en cours, tel que l'API agile de Jira le nomme
+
+
+def sprint_counts(sprints: Iterable[tuple[str, str]]) -> dict[str, tuple[int, int]]:
+    """Par board d'origine des sprints de mes tickets : (dans un sprint en cours, en tout)."""
+    active: Counter = Counter()
+    total: Counter = Counter()
+    for board, state in sprints:
+        total[board] += 1
+        active[board] += state.lower() == ACTIVE
+    return {board: (active[board], n) for board, n in total.items()}
+
+
+def rank_sprint_boards(counts: dict[str, tuple[int, int]]) -> tuple[list[str], bool]:
+    """Boards des sprints de mes tickets, ceux des sprints en cours d'abord, puis le plus de
+    sprints passés. Sûr = un seul, ou un premier qui bat strictement le suivant."""
+    ranked = sorted(counts, key=lambda board: counts[board], reverse=True)
+    sure = len(ranked) == 1 or (len(ranked) > 1 and counts[ranked[0]] > counts[ranked[1]])
+    return ranked, sure
 
 
 def rank_boards(

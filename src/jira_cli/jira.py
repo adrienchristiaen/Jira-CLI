@@ -88,6 +88,32 @@ class JiraClient:
                     break
         return list(found.values())
 
+    def sprints(self, key: str) -> list[tuple[str, str]]:
+        """(board d'origine, état) de chaque sprint du ticket, en cours puis passés : un board
+        qui travaille par sprints se reconnaît à ceux de mes tickets."""
+        data = check(
+            self._session.get(
+                f"{self._agile}/issue/{key}", params={"fields": "sprint,closedSprints"}
+            )
+        ).json()
+        fields = data.get("fields") or {}
+        found = [fields.get("sprint"), *(fields.get("closedSprints") or [])]
+        return [
+            (str(sprint["originBoardId"]), sprint.get("state", ""))
+            for sprint in found
+            if sprint and sprint.get("originBoardId")
+        ]
+
+    def board(self, board_id: str) -> Board | None:
+        data = check(self._session.get(f"{self._agile}/board/{board_id}")).json()
+        return Board(str(data["id"]), data["name"]) if data.get("id") else None
+
+    def ticket_history(self, key: str) -> History:
+        """Vie d'un seul ticket : ses colonnes, quand, qui l'en sort, ses tickets liés."""
+        params = {"fields": "status,created,issuelinks", "expand": "changelog"}
+        issue = check(self._session.get(f"{self._api}/issue/{key}", params=params)).json()
+        return _history(issue)
+
     def find_boards(self, name: str) -> list[Board]:
         """Boards dont le nom contient `name` : pour celui qu'aucun fait ne désigne."""
         params = {"name": name, "maxResults": 50}

@@ -250,3 +250,21 @@ def test_namespaces_are_the_top_group_of_links_and_remotes():
 def test_flow_falls_back_to_the_board_columns_when_no_status_is_common_enough():
     paths = [["A"], ["B"], ["C"], ["D"], ["E"]]  # chaque ticket a un parcours différent
     assert discovery.flow(paths, ["Backlog", "Fait"]) == ["Backlog", "Fait"]
+
+
+def test_sprint_boards_put_the_boards_of_active_sprints_first():
+    sprints = [("4922", "active")] * 3 + [("8", "closed")] * 5 + [("77", "active")]
+    counts = discovery.sprint_counts(sprints)
+    assert counts == {"4922": (3, 3), "8": (0, 5), "77": (1, 1)}
+    assert discovery.rank_sprint_boards(counts) == (["4922", "77", "8"], True)
+
+
+def test_sprint_boards_are_unsure_when_two_boards_are_equally_active():
+    counts = discovery.sprint_counts([("1", "active"), ("2", "active")])
+    ranked, sure = discovery.rank_sprint_boards(counts)
+    assert sorted(ranked) == ["1", "2"] and not sure
+
+
+def test_sprint_boards_fall_back_on_past_sprints_when_none_is_active():
+    counts = discovery.sprint_counts([("1", "closed")] * 4 + [("2", "closed")])
+    assert discovery.rank_sprint_boards(counts) == (["1", "2"], True)

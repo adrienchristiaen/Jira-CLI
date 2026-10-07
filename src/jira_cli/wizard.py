@@ -38,6 +38,7 @@ SAME_BOARD = "Le même board"
 OTHER_BOARD = "Autre board (chercher par son nom)"
 BOARDS = ("board", "deploy_board")
 RECENT = "assignee was currentUser() ORDER BY updated DESC"  # JQL standard de Jira
+SPRINT_TICKETS = 30  # tickets dont on lit les sprints : les plus récents suffisent
 NETWORK_ERRORS = (ApiError, requests.RequestException)
 
 
@@ -240,6 +241,9 @@ class _Discovery:
         for board in dict.fromkeys(b for b, _ in self._boards()):
             done = self._history(board)
             self._activity[board] = (sum(bool(merged.get(h.key)) for h in done), len(done))
+        self._trace(
+            f"GitLab : {getattr(host, 'calls', 0)} requêtes de liste pour {len(keys)} tickets."
+        )
         self.learnt_from = len(histories)
         self.active = sum(bool(e) for e in merged.values())
         self._trace(f"GitLab : activité trouvée pour {self.active}/{self.learnt_from} tickets.")
@@ -315,7 +319,7 @@ class _Discovery:
         self._evidence = {
             b: _evidence(h, "{n} de tes {size} tickets", len(self.tickets)) for b, h in held.items()
         }
-        team, sure = discovery.rank_boards(mine, held)
+        team, sure = self._sprint_team(mine) or discovery.rank_boards(mine, held)
         self._trace_boards("Boards de tes tickets", team)
         if not team:
             self._trace("Aucun board ne porte tes tickets : tous les statuts sont utilisés.")
@@ -352,6 +356,27 @@ class _Discovery:
             self.jira.deploy_board = ranked[0].id
         else:
             self._pick("deploy_board", "Board des mises en preprod/prod", ranked)
+
+    def _sprint_team(self, mine: list[Board]) -> tuple[list[Board], bool] | None:
+        """Board qui travaille par sprints : celui d'où viennent les sprints de mes tickets, en
+        cours d'abord. Mes tickets en cours y sont moins nombreux que tous les miens, d'où
+        cette piste plutôt que de compter ce que chaque board porte."""
+        keys = [i.key for i in self.tickets[:SPRINT_TICKETS]]
+        found = _parallel(lambda k: _quiet(lambda: self.tracker.sprints(k), []), keys)
+        counts = discovery.sprint_counts(s for sprints in found for s in sprints)
+        ranked, sure = discovery.rank_sprint_boards(counts)
+        known = {b.id: b for b in mine}
+        boards = [known.get(i) or _quiet(lambda i=i: self.tracker.board(i), None) for i in ranked]
+        team = [b for b in boards if b]
+        if not team:
+            return None
+        for board in team:
+            active, total = counts[board.id]
+            self._evidence[board.id] = (
+                f"{active} de tes tickets dans un sprint en cours · {total} dans ses sprints"
+            )
+        self._trace("Sprints de tes tickets :")
+        return team, sure
 
     def _trace_boards(self, title: str, boards: list[Board]) -> None:
         self._trace(title + " :")

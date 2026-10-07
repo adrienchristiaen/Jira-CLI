@@ -33,6 +33,7 @@ class GitLabClient:
         self._api = self._base + "/api/v4"
         self._session = session
         self._sleep = sleep
+        self.calls = 0  # requêtes de liste faites, pour voir ce que coûte une recherche
 
     def whoami(self) -> str:
         return check(self._session.get(f"{self._api}/user")).json()["username"]
@@ -206,6 +207,7 @@ class GitLabClient:
         items: list[dict] = []
         page = "1"
         while page:
+            self.calls += 1
             response = check(
                 self._session.get(
                     self._api + path, params={**params, "per_page": 100, "page": page}

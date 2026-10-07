@@ -535,3 +535,65 @@ def test_merge_requests_are_searched_in_the_group_when_there_is_one():
     session = FakeSession({"/merge_requests": FakeResponse([])})
     GitLabClient("https://gitlab.com", session, group="agilefabric").code_events("PROJ-1")
     assert "/groups/agilefabric/merge_requests" in session.calls[0][1]
+
+
+def test_sprints_of_a_ticket_give_their_origin_board_and_state():
+    issue = {
+        "fields": {
+            "sprint": {"id": 9, "state": "active", "originBoardId": 4922},
+            "closedSprints": [
+                {"id": 7, "state": "closed", "originBoardId": 4922},
+                {"id": 3, "state": "closed", "originBoardId": 8},
+                {"id": 2, "state": "closed"},  # sans board d'origine : ignoré
+            ],
+        }
+    }
+    session = FakeSession({"/agile/1.0/issue/PROJ-1": FakeResponse(issue)})
+    assert JiraClient("https://jira", session).sprints("PROJ-1") == [
+        ("4922", "active"),
+        ("4922", "closed"),
+        ("8", "closed"),
+    ]
+
+
+def test_a_ticket_in_no_sprint_has_no_sprints():
+    session = FakeSession({"/issue/PROJ-1": FakeResponse({"fields": {"sprint": None}})})
+    assert JiraClient("https://jira", session).sprints("PROJ-1") == []
+
+
+def test_a_board_is_read_by_its_id():
+    session = FakeSession({"/board/8": FakeResponse({"id": 8, "name": "Squad"})})
+    assert JiraClient("https://jira", session).board("8") == Board("8", "Squad")
+
+
+def test_the_life_of_one_ticket_is_read_from_its_changelog():
+    issue = {
+        "key": "MEP-1",
+        "fields": {"created": "2026-09-01T10:00:00.000+0000", "issuelinks": []},
+        "changelog": {
+            "histories": [
+                {
+                    "created": "2026-09-02T10:00:00.000+0000",
+                    "author": {"name": "ops"},
+                    "items": [{"field": "status", "fromString": "A faire", "toString": "Fait"}],
+                }
+            ]
+        },
+    }
+    session = FakeSession({"/issue/MEP-1": FakeResponse(issue)})
+    history = JiraClient("https://jira", session).ticket_history("MEP-1")
+    assert history.path == ["A faire", "Fait"] and history.stays[0].mover == "ops"
+
+
+def test_gitlab_client_counts_its_requests_to_show_what_a_search_costs():
+    mr = mr_json(7, "PROJ-1 paiement", "feat/PROJ-1")
+    mr |= {"created_at": "2026-09-01T10:00:00Z", "merged_at": None}
+    session = FakeSession(
+        {
+            "/commits": FakeResponse([{"created_at": "2026-09-01T11:00:00Z"}]),
+            "/merge_requests": FakeResponse([mr]),
+        }
+    )
+    client = GitLabClient("https://gl", session)
+    client.code_events("PROJ-1")
+    assert client.calls == 2  # une recherche, puis les commits de la seule MR trouvée
