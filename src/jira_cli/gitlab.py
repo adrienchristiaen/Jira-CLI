@@ -66,6 +66,17 @@ class GitLabClient:
             if key.search(" ".join((mr["title"], mr["source_branch"], mr.get("description") or "")))
         ]
 
+    def merge_request_at(self, url: str) -> MergeRequest | None:
+        """La MR que désigne ce lien (ex. celui du panneau Développement de Jira), sinon None."""
+        match = _MR_URL.match(url)
+        if not match or not url.startswith(self._base + "/"):
+            return None
+        path = match["path"][len(self._base) + 1 :]
+        response = self._session.get(f"{self._project(path)}/merge_requests/{match['iid']}")
+        if response.status_code == 404:
+            return None
+        return _merge_request(check(response).json())
+
     def code_events(self, ticket_key: str) -> list[CodeEvent]:
         """Commits, ouvertures et merges des MR qui citent le ticket, dans l'ordre du temps."""
         if ticket_key in self._events:
@@ -279,6 +290,9 @@ def _merge_request(data: dict) -> MergeRequest:
         web_url=data["web_url"],
         state=data.get("state", "opened"),
     )
+
+
+_MR_URL = re.compile(r"^(?P<path>.+?)(?:/-)?/merge_requests/(?P<iid>\d+)(?:[/?#].*)?$")
 
 
 def _key_pattern(ticket_key: str) -> re.Pattern:

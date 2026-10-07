@@ -11,8 +11,10 @@ from urllib.parse import unquote, urlsplit
 
 import requests
 
+from . import lineage
 from .actions import Context
 from .http import ApiError
+from .lineage import Linked
 from .models import Issue, MergeRequest
 from .stages import Stage, detect
 
@@ -36,17 +38,18 @@ class TicketView:
     error: str = ""
     component: Component | None = None  # sans MR : projet et branche trouvés via Jira
     intent: str = ""  # ce qu'on fait dans la colonne du ticket (develop, install…)
+    mrs: tuple[Linked, ...] = ()  # toutes les MR du ticket et de ses tickets liés (lignage)
 
 
 def load(ctx: Context, issue: Issue) -> TicketView:
     stage, mep = stage_of(ctx, issue)
     intent = ctx.config.jira.intents.get(issue.status, "")
     try:
-        mr, merge_status, pipeline = _merge_request(ctx, issue)
+        mr, merge_status, pipeline, mrs = _merge_request(ctx, issue)
         component = Component(mr.project_path, mr.source_branch) if mr else _component(ctx, issue)
     except (ApiError, requests.RequestException) as error:
         return TicketView(issue, stage, mep, error=f"GitLab : {error}", intent=intent)
-    return TicketView(issue, stage, mep, mr, merge_status, pipeline, "", component, intent)
+    return TicketView(issue, stage, mep, mr, merge_status, pipeline, "", component, intent, mrs)
 
 
 def component_of(links: Iterable[str], gitlab_url: str) -> Component | None:
@@ -98,14 +101,13 @@ def stage_of(ctx: Context, issue: Issue) -> tuple[Stage, Issue | None]:
     return Stage(f"{mep.key} : {mep_stage.description}", mep_stage.next), mep
 
 
-def _merge_request(ctx: Context, issue: Issue) -> tuple[MergeRequest | None, str, str]:
-    """MR qui cite le ticket ; un ticket MEP n'est cité par personne, ses tickets liés si."""
-    mrs: list[MergeRequest] = []
-    for key in (issue.key, *issue.links):
-        if mrs := ctx.host.find_merge_requests(key, include_merged=True):
-            break
-    mr = next((m for m in mrs if m.state == "opened"), mrs[0] if mrs else None)
-    if mr is None:
-        return None, "", ""
+def _merge_request(
+    ctx: Context, issue: Issue
+) -> tuple[MergeRequest | None, str, str, tuple[Linked, ...]]:
+    """MR du ticket (et de ses tickets liés, pour un ticket MEP) ; la plus sûre est affichée."""
+    linked = tuple(lineage.of(issue.key, issue.links, ctx.tracker, ctx.host))
+    if not linked:
+        return None, "", "", ()
+    mr = linked[0].mr
     status = "merged" if mr.state == "merged" else ctx.host.merge_status(mr)
-    return mr, status, ctx.host.pipeline_status(mr)
+    return mr, status, ctx.host.pipeline_status(mr), linked

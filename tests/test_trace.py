@@ -58,3 +58,19 @@ def test_trace_says_where_the_code_events_come_from():
     trace.run("MEP-1", context(), prompter)
     text = "\n".join(prompter.messages)
     assert "MEP-1 : aucune MR" in text and "PROJ-1 (lié)" in text and "2 événements" in text
+
+
+def test_trace_lists_the_merge_requests_with_who_confirms_them():
+    import dataclasses
+
+    from fakes import MR
+
+    kube = dataclasses.replace(MR, project_path="team/kube", iid=9, web_url="https://gl/kube/9")
+    tracker = FakeTracker(lives={"MEP-1": MEP}, links_by_key={"MEP-1": [kube.web_url]})
+    host = FakeHost(events=EVENTS, mrs_by_key={"PROJ-1": [MR]}, mrs_by_url={kube.web_url: kube})
+    ctx = Context(Config(JiraConfig("https://jira"), GitLabConfig("https://gl"), {}), tracker, host)
+    prompter = ScriptedPrompter()
+    trace.run("MEP-1", ctx, prompter)
+    text = "\n".join(prompter.messages)
+    assert "team/app!7" in text and "via PROJ-1" in text and "GitLab seul" in text
+    assert "team/kube!9" in text and "via MEP-1" in text and "Jira seul" in text

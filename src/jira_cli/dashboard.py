@@ -7,7 +7,6 @@ touche : le dashboard s'efface le temps de montrer le plan et de demander confir
 
 from __future__ import annotations
 
-import webbrowser
 from collections.abc import Callable
 from typing import ClassVar
 from urllib.parse import urlsplit
@@ -22,9 +21,10 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, OptionList, Static
 from textual.worker import get_current_worker
 
-from . import actions, discovery, overview, wizard
+from . import actions, browser, discovery, overview, wizard
 from . import config as config_module
 from .http import ApiError
+from .lineage import describe
 from .models import Issue
 from .overview import TicketView
 from .prompt import ConsolePrompter
@@ -240,7 +240,12 @@ class Dashboard(App):
         key = self._selected()
         view = self.views.get(key) if key else None
         if view and view.mr:
-            webbrowser.open(view.mr.web_url)
+            url = view.mr.web_url
+            self.copy_to_clipboard(url)
+            opened = browser.open_url(url)
+            self.notify(
+                f"{url}\n" + ("" if opened else "Pas de navigateur : lien copié."), timeout=10
+            )
         else:
             self.notify("Pas de MR trouvée pour ce ticket.", severity="warning")
 
@@ -348,7 +353,8 @@ def _merge_cell(view: TicketView) -> Text:
     if view.mr is None:
         return Text("aucune MR", style="dim")
     icon, style, label = MERGE.get(view.merge_status, ("✘", "red", view.merge_status))
-    return Text(f"!{view.mr.iid} {icon} {label}", style=style)
+    more = f" +{len(view.mrs) - 1}" if len(view.mrs) > 1 else ""
+    return Text(f"!{view.mr.iid} {icon} {label}{more}", style=style)
 
 
 def _pipeline_cell(status: str) -> Text:
@@ -382,6 +388,11 @@ def _detail(view: TicketView, environments: list[str]) -> Text:
         text.append("Pipeline    ", style="dim")
         text.append_text(_pipeline_cell(view.pipeline))
         text.append(f"\n            {view.mr.web_url}\n", style="dim underline")
+        if len(view.mrs) > 1:
+            text.append("Lignage     ", style="dim")
+            text.append("MR liées à ce ticket\n")
+            for linked in view.mrs:
+                text.append(f"            {describe(linked)}\n")
     elif view.component:
         branch = view.component.branch or "branche pas trouvée"
         text.append("pas encore de MR", style="dim")
