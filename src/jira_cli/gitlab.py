@@ -10,7 +10,7 @@ from urllib.parse import quote
 import requests
 
 from .cache import EventCache
-from .http import check, timestamp
+from .http import ApiError, check, timestamp
 from .models import CodeEvent, MergeRequest, PipelineVariable
 from .ports import ProjectRef
 
@@ -21,6 +21,10 @@ query($path: ID!, $ref: String!) {
   }
 }
 """
+
+
+RETRY_STATUSES = (408, 429, 502, 503, 504)
+RETRY_PAUSES = (1, 2)  # secondes avant la 2e et la 3e tentative
 
 
 class GitLabClient:
@@ -53,7 +57,7 @@ class GitLabClient:
     ) -> list[MergeRequest]:
         """MR ouvertes (et mergées si demandé) qui citent le ticket, sur toute l'instance."""
         state = "all" if include_merged else "opened"
-        found = self._paginate(self._mrs, {"scope": "all", "state": state, "search": ticket_key})
+        found = self._search(state, ticket_key)
         found = [mr for mr in found if mr["state"] in ("opened", "merged")]
         key = _key_pattern(ticket_key)
         return [
@@ -71,7 +75,7 @@ class GitLabClient:
             self._events[ticket_key] = stored
             return stored
         key = _key_pattern(ticket_key)
-        found = self._paginate(self._mrs, {"scope": "all", "state": "all", "search": ticket_key})
+        found = self._search("all", ticket_key)
         mine = [mr for mr in found if key.search(" ".join((mr["title"], mr["source_branch"])))]
         with ThreadPoolExecutor(max_workers=8) as pool:  # les commits de chaque MR, en même temps
             commits = list(
@@ -94,6 +98,20 @@ class GitLabClient:
         if self._cache and mine and all(mr["state"] in ("merged", "closed") for mr in mine):
             self._cache.put(f"{self._scope}|{ticket_key}", result)
         return result
+
+    def _search(self, state: str, ticket_key: str) -> list[dict]:
+        """MR citant le ticket. Si GitLab coupe la recherche « tous états » (408), on la découpe."""
+        params = {"scope": "all", "search": ticket_key}
+        try:
+            return self._paginate(self._mrs, {**params, "state": state})
+        except ApiError as error:
+            if state != "all" or error.status != 408:
+                raise
+        return [
+            mr
+            for one in ("opened", "merged", "closed")
+            for mr in self._paginate(self._mrs, {**params, "state": one})
+        ]
 
     def branches(self, project: ProjectRef, ticket_key: str) -> list[str]:
         """Branches du projet qui citent le ticket (feat/PROJ-123-…), pas PROJ-1234."""
@@ -228,16 +246,23 @@ class GitLabClient:
     def _project(self, project: int | str) -> str:
         return f"{self._api}/projects/{quote(str(project), safe='')}"
 
+    def _get(self, path: str, params: dict) -> requests.Response:
+        """Un GET, repris après une pause si GitLab est surchargé (408, 429, 5xx passagers)."""
+        for pause in (*RETRY_PAUSES, None):
+            self.calls += 1
+            try:
+                return check(self._session.get(self._api + path, params=params))
+            except ApiError as error:
+                if pause is None or error.status not in RETRY_STATUSES:
+                    raise
+                self._sleep(pause)
+        raise AssertionError("unreachable")
+
     def _paginate(self, path: str, params: dict) -> list[dict]:
         items: list[dict] = []
         page = "1"
         while page:
-            self.calls += 1
-            response = check(
-                self._session.get(
-                    self._api + path, params={**params, "per_page": 100, "page": page}
-                )
-            )
+            response = self._get(path, {**params, "per_page": 100, "page": page})
             items.extend(response.json())
             page = response.headers.get("X-Next-Page", "")
         return items
