@@ -96,3 +96,10 @@ def test_view_carries_the_intent_of_the_column():
     jira = JiraConfig("https://jira", intents={"A Recetter": "check"})
     view = overview.load(ctx(jira=jira), ISSUE)
     assert view.intent == "check"
+
+
+def test_mep_ticket_shows_the_merge_request_of_the_ticket_it_delivers():
+    mep = Issue("MEP-9", "MEP", "A installer preprod", links=("PROJ-123",))
+    host = FakeHost(mrs_by_key={"PROJ-123": [MR]})  # aucune MR ne cite MEP-9
+    view = overview.load(ctx(FakeTracker(issue=mep), host), mep)
+    assert view.mr == MR

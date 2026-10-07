@@ -42,7 +42,7 @@ def load(ctx: Context, issue: Issue) -> TicketView:
     stage, mep = stage_of(ctx, issue)
     intent = ctx.config.jira.intents.get(issue.status, "")
     try:
-        mr, merge_status, pipeline = _merge_request(ctx, issue.key)
+        mr, merge_status, pipeline = _merge_request(ctx, issue)
         component = Component(mr.project_path, mr.source_branch) if mr else _component(ctx, issue)
     except (ApiError, requests.RequestException) as error:
         return TicketView(issue, stage, mep, error=f"GitLab : {error}", intent=intent)
@@ -98,8 +98,12 @@ def stage_of(ctx: Context, issue: Issue) -> tuple[Stage, Issue | None]:
     return Stage(f"{mep.key} : {mep_stage.description}", mep_stage.next), mep
 
 
-def _merge_request(ctx: Context, key: str) -> tuple[MergeRequest | None, str, str]:
-    mrs = ctx.host.find_merge_requests(key, include_merged=True)
+def _merge_request(ctx: Context, issue: Issue) -> tuple[MergeRequest | None, str, str]:
+    """MR qui cite le ticket ; un ticket MEP n'est cité par personne, ses tickets liés si."""
+    mrs: list[MergeRequest] = []
+    for key in (issue.key, *issue.links):
+        if mrs := ctx.host.find_merge_requests(key, include_merged=True):
+            break
     mr = next((m for m in mrs if m.state == "opened"), mrs[0] if mrs else None)
     if mr is None:
         return None, "", ""

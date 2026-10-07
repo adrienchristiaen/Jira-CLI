@@ -108,6 +108,7 @@ class FakeTracker:
 @dataclass
 class FakeHost:
     mrs: list[MergeRequest] = field(default_factory=lambda: [MR])
+    mrs_by_key: dict[str, list[MergeRequest]] | None = None  # si donné : MR citant chaque clé
     files: dict[str, str] = field(default_factory=dict)
     paths: list[str] = field(default_factory=list)
     dirs: dict[str, list[str]] = field(default_factory=dict)
@@ -132,7 +133,8 @@ class FakeHost:
         return self.events.get(ticket_key, [])
 
     def find_merge_requests(self, ticket_key: str, include_merged: bool = False):
-        return [mr for mr in self.mrs if include_merged or mr.state == "opened"]
+        mrs = self.mrs if self.mrs_by_key is None else self.mrs_by_key.get(ticket_key, [])
+        return [mr for mr in mrs if include_merged or mr.state == "opened"]
 
     def merge_status(self, mr: MergeRequest) -> str:
         return self.mergeable
