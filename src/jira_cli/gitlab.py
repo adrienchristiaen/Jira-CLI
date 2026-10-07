@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 import requests
 
+from .cache import EventCache
 from .http import check, timestamp
 from .models import CodeEvent, MergeRequest, PipelineVariable
 from .ports import ProjectRef
@@ -23,7 +25,12 @@ query($path: ID!, $ref: String!) {
 
 class GitLabClient:
     def __init__(
-        self, base_url: str, session: requests.Session, sleep=time.sleep, group: str = ""
+        self,
+        base_url: str,
+        session: requests.Session,
+        sleep=time.sleep,
+        group: str = "",
+        cache: EventCache | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         # Sur une instance partagée (gitlab.com), chercher dans tout GitLab est lent et bruité.
@@ -34,6 +41,9 @@ class GitLabClient:
         self._session = session
         self._sleep = sleep
         self.calls = 0  # requêtes de liste faites, pour voir ce que coûte une recherche
+        self._cache = cache
+        self._scope = f"{self._base}|{group}"
+        self._events: dict[str, list[CodeEvent]] = {}
 
     def whoami(self) -> str:
         return check(self._session.get(f"{self._api}/user")).json()["username"]
@@ -54,21 +64,36 @@ class GitLabClient:
 
     def code_events(self, ticket_key: str) -> list[CodeEvent]:
         """Commits, ouvertures et merges des MR qui citent le ticket, dans l'ordre du temps."""
+        if ticket_key in self._events:
+            return self._events[ticket_key]
+        stored = self._cache.get(f"{self._scope}|{ticket_key}") if self._cache else None
+        if stored is not None:
+            self._events[ticket_key] = stored
+            return stored
         key = _key_pattern(ticket_key)
         found = self._paginate(self._mrs, {"scope": "all", "state": "all", "search": ticket_key})
-        events = []
-        for mr in found:
-            if not key.search(" ".join((mr["title"], mr["source_branch"]))):
-                continue
-            project = mr["references"]["full"].split("!")[0]
-            commits = self._paginate(
-                f"/projects/{mr['project_id']}/merge_requests/{mr['iid']}/commits", {}
+        mine = [mr for mr in found if key.search(" ".join((mr["title"], mr["source_branch"])))]
+        with ThreadPoolExecutor(max_workers=8) as pool:  # les commits de chaque MR, en même temps
+            commits = list(
+                pool.map(
+                    lambda mr: self._paginate(
+                        f"/projects/{mr['project_id']}/merge_requests/{mr['iid']}/commits", {}
+                    ),
+                    mine,
+                )
             )
-            events += [CodeEvent("commit", timestamp(c["created_at"]), project) for c in commits]
+        events = []
+        for mr, mr_commits in zip(mine, commits):
+            project = mr["references"]["full"].split("!")[0]
+            events += [CodeEvent("commit", timestamp(c["created_at"]), project) for c in mr_commits]
             events.append(CodeEvent("mr_opened", timestamp(mr["created_at"]), project))
             if mr.get("merged_at"):
                 events.append(CodeEvent("mr_merged", timestamp(mr["merged_at"]), project))
-        return sorted((e for e in events if e.at), key=lambda e: e.at)
+        result = sorted((e for e in events if e.at), key=lambda e: e.at)
+        self._events[ticket_key] = result
+        if self._cache and mine and all(mr["state"] in ("merged", "closed") for mr in mine):
+            self._cache.put(f"{self._scope}|{ticket_key}", result)
+        return result
 
     def branches(self, project: ProjectRef, ticket_key: str) -> list[str]:
         """Branches du projet qui citent le ticket (feat/PROJ-123-…), pas PROJ-1234."""

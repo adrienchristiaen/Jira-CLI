@@ -73,6 +73,9 @@ def _summary(body: str) -> str:
 def _session() -> requests.Session:
     session = requests.Session()
     session.headers["Accept"] = "application/json"
+    adapter = requests.adapters.HTTPAdapter(pool_maxsize=32)  # appels en parallèle : 8 × 8 max
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
     return session
 
 

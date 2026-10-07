@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from . import config as config_module
 from . import deploy as deploy_step
 from . import release as release_step
+from .cache import EventCache
 from .config import Config, RepoConfig
 from .gitlab import GitLabClient
 from .http import gitlab_session, jira_session
@@ -30,7 +31,12 @@ def connect() -> Context:
     store = TokenStore(config_module.home())
     tracker = JiraClient(config.jira.url, jira_session(config.jira, _token(store, "jira")))
     session = gitlab_session(config.gitlab, _token(store, "gitlab"))
-    host = GitLabClient(config.gitlab.url, session, group=config.gitlab.group)
+    host = GitLabClient(
+        config.gitlab.url,
+        session,
+        group=config.gitlab.group,
+        cache=EventCache(config_module.home() / "cache" / "code-events.json"),
+    )
     return Context(config, tracker, host)
 
 
