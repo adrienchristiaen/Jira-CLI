@@ -597,3 +597,56 @@ def test_gitlab_client_counts_its_requests_to_show_what_a_search_costs():
     client = GitLabClient("https://gl", session)
     client.code_events("PROJ-1")
     assert client.calls == 2  # une recherche, puis les commits de la seule MR trouvée
+
+
+def _settled_session(state="merged"):
+    mr = {
+        **mr_json(7, "PROJ-1 paiement", "feat/PROJ-1", state=state),
+        "created_at": "2026-01-02T08:00:00Z",
+        "merged_at": "2026-01-05T08:00:00Z" if state == "merged" else None,
+    }
+    return FakeSession(
+        {
+            "/commits": FakeResponse([{"created_at": "2026-01-01T10:00:00Z"}]),
+            "/merge_requests": FakeResponse([mr]),
+        }
+    )
+
+
+def test_code_events_are_memoized_within_a_run():
+    session = _settled_session("opened")
+    client = GitLabClient("https://gl", session)
+    assert client.code_events("PROJ-1") == client.code_events("PROJ-1")
+    assert len(session.calls) == 2  # une recherche + les commits, une seule fois
+
+
+def test_events_of_a_settled_ticket_are_kept_between_runs(tmp_path):
+    from jira_cli.cache import EventCache
+
+    first = _settled_session()
+    events = GitLabClient("https://gl", first, cache=EventCache(tmp_path / "e.json")).code_events(
+        "PROJ-1"
+    )
+    again = _settled_session()
+    cached = GitLabClient("https://gl", again, cache=EventCache(tmp_path / "e.json"))
+    assert cached.code_events("PROJ-1") == events
+    assert again.calls == []  # tout vient du disque
+
+
+def test_events_of_a_ticket_with_an_open_mr_are_not_kept(tmp_path):
+    from jira_cli.cache import EventCache
+
+    GitLabClient(
+        "https://gl", _settled_session("opened"), cache=EventCache(tmp_path / "e.json")
+    ).code_events("PROJ-1")
+    again = _settled_session("opened")
+    GitLabClient("https://gl", again, cache=EventCache(tmp_path / "e.json")).code_events("PROJ-1")
+    assert again.calls  # elle peut encore bouger : on relit
+
+
+def test_a_broken_cache_file_is_ignored(tmp_path):
+    from jira_cli.cache import EventCache
+
+    path = tmp_path / "e.json"
+    path.write_text("{pas du json")
+    assert EventCache(path).get("x") is None

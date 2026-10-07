@@ -23,6 +23,7 @@ import requests
 
 from . import config as config_module
 from . import discovery
+from .cache import EventCache
 from .config import Config, GitLabConfig, JiraConfig, RepoConfig
 from .gitlab import GitLabClient
 from .http import ApiError, gitlab_session, jira_session
@@ -47,7 +48,12 @@ def _jira_client(jira: JiraConfig, token: str) -> JiraClient:
 
 
 def _gitlab_client(gitlab: GitLabConfig, token: str) -> GitLabClient:
-    return GitLabClient(gitlab.url, gitlab_session(gitlab, token), group=gitlab.group)
+    return GitLabClient(
+        gitlab.url,
+        gitlab_session(gitlab, token),
+        group=gitlab.group,
+        cache=EventCache(config_module.home() / "cache" / "code-events.json"),
+    )
 
 
 def _git_remotes() -> list[str]:
