@@ -7,7 +7,6 @@ touche : le dashboard s'efface le temps de montrer le plan et de demander confir
 
 from __future__ import annotations
 
-import webbrowser
 from collections.abc import Callable
 from typing import ClassVar
 from urllib.parse import urlsplit
@@ -22,7 +21,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, OptionList, Static
 from textual.worker import get_current_worker
 
-from . import actions, discovery, overview, wizard
+from . import actions, browser, discovery, overview, wizard
 from . import config as config_module
 from .http import ApiError
 from .models import Issue
@@ -240,7 +239,12 @@ class Dashboard(App):
         key = self._selected()
         view = self.views.get(key) if key else None
         if view and view.mr:
-            webbrowser.open(view.mr.web_url)
+            url = view.mr.web_url
+            self.copy_to_clipboard(url)
+            opened = browser.open_url(url)
+            self.notify(
+                f"{url}\n" + ("" if opened else "Pas de navigateur : lien copié."), timeout=10
+            )
         else:
             self.notify("Pas de MR trouvée pour ce ticket.", severity="warning")
 
