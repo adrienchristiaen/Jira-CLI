@@ -37,7 +37,19 @@ class FakeTracker:
     cloud: bool = False
     board_tickets: dict[str, list[str]] = field(default_factory=dict)  # clés présentes par board
     named_boards: list[Board] = field(default_factory=list)  # trouvés par leur nom
+    ticket_sprints: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    known_boards: dict[str, Board] = field(default_factory=dict)  # lus par leur id
+    lives: dict[str, History] = field(default_factory=dict)  # vie d'un ticket, par clé
     board_searches: list[str] = field(default_factory=list)
+
+    def sprints(self, key: str) -> list[tuple[str, str]]:
+        return self.ticket_sprints.get(key, [])
+
+    def board(self, board_id: str) -> Board | None:
+        return self.known_boards.get(board_id)
+
+    def ticket_history(self, key: str) -> History:
+        return self.lives[key]
 
     def find_boards(self, name: str) -> list[Board]:
         self.board_searches.append(name)

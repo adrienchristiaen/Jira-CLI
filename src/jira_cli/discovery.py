@@ -62,7 +62,8 @@ def flow(paths: list[list[str]], columns: list[str]) -> list[str]:
         if len(seen) >= len(paths) / 4 and (not columns or s in columns)
     ]
     order = {s: i for i, s in enumerate(columns)}
-    return sorted(used, key=lambda s: (sum(positions[s]) / len(positions[s]), order.get(s, 0)))
+    ordered = sorted(used, key=lambda s: (sum(positions[s]) / len(positions[s]), order.get(s, 0)))
+    return ordered or columns  # aucun parcours commun : les colonnes du board, sans rien cacher
 
 
 def missing(jira: JiraConfig, environments: list[str]) -> list[str]:
@@ -170,7 +171,7 @@ def intent_votes(
     la colonne) ; la preuve affichée à côté de chaque colonne."""
     votes: dict[str, Counter] = {}
     for history in histories:
-        for status, intent in _stay_intents(history, events.get(history.key, [])):
+        for status, intent in stay_intents(history, events.get(history.key, [])):
             votes.setdefault(status, Counter())[intent] += 1
     found = {}
     for status, counter in votes.items():
@@ -180,7 +181,7 @@ def intent_votes(
     return found
 
 
-def _stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, str]]:
+def stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, str]]:
     """(colonne, intention) pour chaque passage du ticket ; vide quand rien ne parle.
 
     La MR du code mergée : on release. Une MR dans un autre projet : la première installe,
@@ -191,7 +192,7 @@ def _stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, 
     code = min(events, key=lambda e: e.at).project if events else ""  # le dev commence là
     developer, installed, reviewed, found = "", False, False, []
     for stay in history.stays:
-        inside = [e for e in events if _during(e.at, stay)]
+        inside = [e for e in events if during(e.at, stay)]
         kinds = {e.kind for e in inside if e.project == code}
         if stay.end is None:
             intent = "done"
@@ -211,7 +212,7 @@ def _stay_intents(history: History, events: list[CodeEvent]) -> list[tuple[str, 
     return found
 
 
-def _during(moment: datetime, stay: Stay) -> bool:
+def during(moment: datetime, stay: Stay) -> bool:
     return (
         stay.start is not None and stay.start <= moment and (stay.end is None or moment < stay.end)
     )
@@ -281,20 +282,49 @@ def foreign_links(tickets: Iterable[tuple[str, Iterable[str]]]) -> list[str]:
     return list(dict.fromkeys(found))
 
 
-def rank_boards(
-    boards: list[Board], counts: dict[str, tuple[int, int]], size: int
-) -> tuple[list[Board], bool]:
-    """Boards qui portent au moins un des `size` tickets cherchés, celui qui leur ressemble le
-    plus en tête ; `counts` = {board: (tickets cherchés qu'il porte, tickets en tout)}. La
-    ressemblance (Jaccard) préfère un board précis à un board géant qui porte tout. Et si le
-    premier s'impose : seul, ou strictement plus ressemblant que le suivant."""
+ACTIVE = "active"  # état d'un sprint en cours, tel que l'API agile de Jira le nomme
 
-    def similarity(board: Board) -> float:
-        held, total = counts.get(board.id, (0, 0))
-        return held / max(total + size - held, 1)
 
-    ranked = sorted(
-        (b for b in boards if counts.get(b.id, (0, 0))[0]), key=similarity, reverse=True
-    )
-    sure = len(ranked) == 1 or (len(ranked) > 1 and similarity(ranked[0]) > similarity(ranked[1]))
+def sprint_counts(sprints: Iterable[tuple[str, str]]) -> dict[str, tuple[int, int]]:
+    """Par board d'origine des sprints de mes tickets : (dans un sprint en cours, en tout)."""
+    active: Counter = Counter()
+    total: Counter = Counter()
+    for board, state in sprints:
+        total[board] += 1
+        active[board] += state.lower() == ACTIVE
+    return {board: (active[board], n) for board, n in total.items()}
+
+
+def rank_sprint_boards(counts: dict[str, tuple[int, int]]) -> tuple[list[str], bool]:
+    """Boards des sprints de mes tickets, ceux des sprints en cours d'abord, puis le plus de
+    sprints passés. Sûr = un seul, ou un premier qui bat strictement le suivant."""
+    ranked = sorted(counts, key=lambda board: counts[board], reverse=True)
+    sure = len(ranked) == 1 or (len(ranked) > 1 and counts[ranked[0]] > counts[ranked[1]])
     return ranked, sure
+
+
+def rank_boards(
+    boards: list[Board], counts: dict[str, tuple[int, int]]
+) -> tuple[list[Board], bool]:
+    """Boards qui portent au moins un des tickets cherchés et qu'aucun autre ne bat sur les
+    deux tableaux : plus de ces tickets ET moins de tickets en tout. `counts` = {board:
+    (tickets cherchés qu'il porte, tickets en tout)}. Un board géant porte beaucoup de mes
+    tickets sans être le mien, un tout petit n'en porte qu'un : sans critère qui tranche on ne
+    devine pas. Reste en tête le plus chargé de mes tickets. Sûr = un seul survivant."""
+
+    def beaten(board: Board) -> bool:
+        held, total = counts[board.id]
+        return any(
+            other_held >= held
+            and other_total <= total
+            and (other_held, other_total) != (held, total)
+            for other in boards
+            if other.id != board.id and other.id in counts
+            for other_held, other_total in [counts[other.id]]
+        )
+
+    holding = [b for b in boards if counts.get(b.id, (0, 0))[0]]
+    ranked = sorted(
+        (b for b in holding if not beaten(b)), key=lambda b: (-counts[b.id][0], counts[b.id][1])
+    )
+    return ranked, len(ranked) == 1

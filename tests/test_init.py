@@ -556,3 +556,40 @@ def test_why_gitlab_refused_is_shown():
     hosts = iter([RefusingHost(), FakeHost(events=EVENTS)])
     wizard.run_init(prompter, lambda c, t: tracker(), lambda c, t: next(hosts), lambda: [])
     assert any("404" in m for m in prompter.messages if m.startswith("ERREUR"))
+
+
+def test_summary_says_how_many_finished_tickets_of_each_board_have_gitlab_activity():
+    prompter, _ = init(["https://jira.acme.fr", "pat", "gl", None])
+    summary = next(m for m in prompter.messages if "Board de l'équipe" in m)
+    assert "activité GitLab : 1/1 tickets terminés" in summary
+    assert summary.count("activité GitLab") == 2  # l'équipe et les mises en prod
+
+
+def test_sprints_name_the_team_board_even_when_other_boards_hold_more_of_my_tickets():
+    # Le board de base travaille par sprints : mes tickets en cours y sont peu nombreux,
+    # mais leurs sprints actifs viennent de ce board.
+    giant, squad = Board("1", "Géant"), Board("4922", "Squad Paiement")
+    jira = tracker(
+        all_boards=[giant, squad, Board("77", "Phenix Deployments")],
+        board_tickets={"1": ["PROJ-123"], "4922": ["PROJ-123"], "77": ["MEP-9"]},
+        ticket_sprints={"PROJ-123": [("4922", "active"), ("4922", "closed")]},
+    )
+    prompter, config = init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    assert config.jira.board == "4922"
+    assert "Board de ton équipe" not in questions(prompter)
+
+
+def test_the_sprint_board_is_read_by_id_when_my_projects_have_no_such_board():
+    elsewhere = Board("555", "Board d'un autre projet")
+    jira = tracker(
+        ticket_sprints={"PROJ-123": [("555", "active")]},
+        known_boards={"555": elsewhere},
+    )
+    _, config = init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    assert config.jira.board == "555"
+
+
+def test_without_sprints_the_team_board_is_still_deduced_from_the_boards():
+    jira = tracker(ticket_sprints={})
+    _, config = init(["https://jira.acme.fr", "pat", "gl", None], jira)
+    assert config.jira.board == "4922"

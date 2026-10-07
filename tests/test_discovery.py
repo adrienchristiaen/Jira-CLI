@@ -199,18 +199,31 @@ def test_git_remotes_give_their_host():
     assert discovery.remote_hosts(remotes) == ["https://git.acme.fr", "https://other.fr"]
 
 
-def test_rank_boards_prefers_the_board_that_looks_most_like_the_tickets():
-    # Chiffres réels d'Adrien : un board géant porte plus de ses tickets, mais le board de
-    # l'équipe leur ressemble bien plus (5 sur 3421 contre 16 sur 38110).
-    boards = [Board("1", "Géant"), Board("2", "Équipe"), Board("3", "Voisin")]
-    counts = {"1": (16, 38110), "2": (5, 3421), "3": (5, 5387)}
-    ranked, sure = discovery.rank_boards(boards, counts, 18)
-    assert [b.id for b in ranked] == ["2", "3", "1"] and sure
+def test_rank_boards_drops_boards_beaten_on_both_counts_and_asks_for_the_rest():
+    # Chiffres d'Adrien : seul un board qui porte plus de mes tickets ET qui est plus petit
+    # bat les autres. Ici rien ne départage le géant (16 tickets), l'équipe (5) et le tout
+    # petit (1) : on ne devine pas, on laisse choisir.
+    boards = [Board(i, i) for i in ("giant", "team", "mid", "tiny", "big2")]
+    counts = {
+        "giant": (16, 38110),
+        "team": (5, 3421),
+        "mid": (5, 5387),  # battu par « team » : autant de tickets, plus grand
+        "tiny": (1, 58),
+        "big2": (14, 39225),  # battu par « giant »
+    }
+    ranked, sure = discovery.rank_boards(boards, counts)
+    assert [b.id for b in ranked] == ["giant", "team", "tiny"] and not sure
+
+
+def test_rank_boards_is_sure_when_one_board_beats_all_others():
+    boards = [Board("a", "a"), Board("b", "b")]
+    ranked, sure = discovery.rank_boards(boards, {"a": (5, 100), "b": (3, 900)})
+    assert [b.id for b in ranked] == ["a"] and sure
 
 
 def test_rank_boards_is_unsure_on_a_tie_and_ignores_boards_holding_none():
     boards = [Board("1", "A"), Board("2", "B"), Board("3", "C")]
-    ranked, sure = discovery.rank_boards(boards, {"1": (2, 10), "2": (2, 10), "3": (0, 1)}, 4)
+    ranked, sure = discovery.rank_boards(boards, {"1": (2, 10), "2": (2, 10), "3": (0, 1)})
     assert [b.id for b in ranked] == ["1", "2"] and not sure
 
 
@@ -232,3 +245,26 @@ def test_namespaces_are_the_top_group_of_links_and_remotes():
         ]
     )
     assert found == {"https://gitlab.com": "agilefabric", "https://gitlab.acme.fr": "team"}
+
+
+def test_flow_falls_back_to_the_board_columns_when_no_status_is_common_enough():
+    paths = [["A"], ["B"], ["C"], ["D"], ["E"]]  # chaque ticket a un parcours différent
+    assert discovery.flow(paths, ["Backlog", "Fait"]) == ["Backlog", "Fait"]
+
+
+def test_sprint_boards_put_the_boards_of_active_sprints_first():
+    sprints = [("4922", "active")] * 3 + [("8", "closed")] * 5 + [("77", "active")]
+    counts = discovery.sprint_counts(sprints)
+    assert counts == {"4922": (3, 3), "8": (0, 5), "77": (1, 1)}
+    assert discovery.rank_sprint_boards(counts) == (["4922", "77", "8"], True)
+
+
+def test_sprint_boards_are_unsure_when_two_boards_are_equally_active():
+    counts = discovery.sprint_counts([("1", "active"), ("2", "active")])
+    ranked, sure = discovery.rank_sprint_boards(counts)
+    assert sorted(ranked) == ["1", "2"] and not sure
+
+
+def test_sprint_boards_fall_back_on_past_sprints_when_none_is_active():
+    counts = discovery.sprint_counts([("1", "closed")] * 4 + [("2", "closed")])
+    assert discovery.rank_sprint_boards(counts) == (["1", "2"], True)

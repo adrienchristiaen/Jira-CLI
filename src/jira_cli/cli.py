@@ -1,11 +1,11 @@
-"""Point d'entrée : `jira-cli` (dashboard), `jira-cli init`, `release`, `deploy`."""
+"""Point d'entrée : `jira-cli` (dashboard), `init`, `release`, `deploy`, `trace`."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 
-from . import actions, wizard
+from . import actions, trace, wizard
 from .http import ApiError
 from .prompt import ConsolePrompter
 from .steps import Aborted
@@ -27,6 +27,10 @@ def main(argv: list[str] | None = None) -> int:
     init.add_argument(
         "--explain", action="store_true", help="affiche chaque déduction avec ses preuves"
     )
+    trace_command = commands.add_parser(
+        "trace", help="la vie d'un ticket et ce que GitLab y a vu (pour comprendre un « ? »)"
+    )
+    trace_command.add_argument("ticket", help="clé du ticket Jira, ex. MEP-123")
     release = commands.add_parser(
         "release", help="prépare et lance la release d'un ticket (RC, ou finale avec --final)"
     )
@@ -60,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
             wizard.run_init(prompter, explain=args.explain)
             return 0
         ctx = actions.connect()
+        if args.command == "trace":
+            trace.run(args.ticket, ctx, prompter)
+            return 0
         if args.command == "deploy":
             actions.deploy(args.ticket, ctx, prompter, args.env, args.dry_run)
         else:

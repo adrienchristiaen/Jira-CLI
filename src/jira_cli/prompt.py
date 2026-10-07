@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 
 import questionary
 from rich.console import Console
@@ -22,6 +24,18 @@ STYLE = questionary.Style(
 
 
 ARROWS = "(flèches ↑↓ puis entrée)"
+
+
+def _ask(question: questionary.Question):
+    """Pose la question. Dans le dashboard une boucle asyncio tourne déjà (Textual) et
+    prompt_toolkit veut démarrer la sienne : il la fait alors dans un fil à part, d'où
+    Ctrl-C et la réponse reviennent tels quels."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return question.unsafe_ask()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(question.unsafe_ask).result()
 
 
 class ConsolePrompter:
@@ -54,30 +68,32 @@ class ConsolePrompter:
 
     def confirm(self, question: str, default: bool = True) -> bool:
         hint = "(Y = oui / n)" if default else "(y = oui / N)"
-        return questionary.confirm(
-            question, default=default, instruction=hint, style=STYLE
-        ).unsafe_ask()
+        return _ask(questionary.confirm(question, default=default, instruction=hint, style=STYLE))
 
     def ask(self, question: str, default: str = "", options: Sequence[str] = ()) -> str:
         if options:
             choices = list(options)
-            return questionary.select(
-                question,
-                choices,
-                default=default if default in choices else None,
-                instruction=ARROWS,
-                style=STYLE,
-            ).unsafe_ask()
-        return questionary.text(question, default=default, style=STYLE).unsafe_ask().strip()
+            return _ask(
+                questionary.select(
+                    question,
+                    choices,
+                    default=default if default in choices else None,
+                    instruction=ARROWS,
+                    style=STYLE,
+                )
+            )
+        return _ask(questionary.text(question, default=default, style=STYLE)).strip()
 
     def secret(self, question: str) -> str:
-        return questionary.password(question, style=STYLE).unsafe_ask().strip()
+        return _ask(questionary.password(question, style=STYLE)).strip()
 
     def choose(self, question: str, items: Sequence[str], default: int = 0) -> int:
         choices = [questionary.Choice(item, value=index) for index, item in enumerate(items)]
-        answer = questionary.select(
-            question, choices, default=choices[default], instruction=ARROWS, style=STYLE
-        ).unsafe_ask()
+        answer = _ask(
+            questionary.select(
+                question, choices, default=choices[default], instruction=ARROWS, style=STYLE
+            )
+        )
         # Certains terminaux font renvoyer le libellé au lieu de la valeur : on revient à l'index.
         return answer if isinstance(answer, int) else list(items).index(answer)
 
@@ -88,9 +104,11 @@ class ConsolePrompter:
             questionary.Choice(item, value=index, checked=index in checked)
             for index, item in enumerate(items)
         ]
-        return questionary.checkbox(
-            question,
-            choices,
-            instruction="(espace = cocher, entrée = valider)",
-            style=STYLE,
-        ).unsafe_ask()
+        return _ask(
+            questionary.checkbox(
+                question,
+                choices,
+                instruction="(espace = cocher, entrée = valider)",
+                style=STYLE,
+            )
+        )
