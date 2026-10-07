@@ -182,7 +182,8 @@ class _Discovery:
         self.active = 0  # dont ceux qui y ont une activité
         self._support: dict[
             str, tuple[int, int]
-        ] = {}  # colonne -> (tickets qui le montrent, passés)
+        ] = {}  # colonne -> (tickets qui la montrent, passés)
+        self._activity: dict[str, tuple[int, int]] = {}  # board -> (tickets avec GitLab, total)
         self.tracker, self.environments, self._remotes = tracker, environments, remotes
         self._evidence: dict[str, str] = {}  # board -> ce qui a guidé son choix
         self.issues: list[Issue] = []
@@ -236,6 +237,9 @@ class _Discovery:
         }
         source = self._sources.get(self.gitlab.url, "ta config")
         self._trace(f"GitLab : {self.gitlab.url}, trouvé dans {source}.")
+        for board in dict.fromkeys(b for b, _ in self._boards()):
+            done = self._history(board)
+            self._activity[board] = (sum(bool(merged.get(h.key)) for h in done), len(done))
         self.learnt_from = len(histories)
         self.active = sum(bool(e) for e in merged.values())
         self._trace(f"GitLab : activité trouvée pour {self.active}/{self.learnt_from} tickets.")
@@ -270,6 +274,8 @@ class _Discovery:
             lines.append(
                 f"  {title} : {_with_evidence(self._name(board), self._evidence.get(board, ''))}"
             )
+            if activity := self._activity.get(board):
+                lines.append(f"    activité GitLab : {activity[0]}/{activity[1]} tickets terminés")
             for column in self._statuses(board):
                 lines.append(f"    {column:<24} {self._column(column, fields)}")
             missing = [f for f in discovery.missing(self.jira, self.environments) if f in fields]
@@ -309,7 +315,7 @@ class _Discovery:
         self._evidence = {
             b: _evidence(h, "{n} de tes {size} tickets", len(self.tickets)) for b, h in held.items()
         }
-        team, sure = discovery.rank_boards(mine, held, len(self.tickets))
+        team, sure = discovery.rank_boards(mine, held)
         self._trace_boards("Boards de tes tickets", team)
         if not team:
             self._trace("Aucun board ne porte tes tickets : tous les statuts sont utilisés.")
@@ -332,7 +338,7 @@ class _Discovery:
             self._evidence[board] = _evidence(
                 found, "{n} des {size} tickets liés aux tiens", len(keys)
             )
-        ranked, sure = discovery.rank_boards(candidates, links, len(keys))
+        ranked, sure = discovery.rank_boards(candidates, links)
         self.deploy = ranked
         self._trace(f"{len(keys)} tickets d'autres projets liés aux tiens.")
         self._trace_boards("Boards de ces tickets liés", ranked)

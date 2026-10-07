@@ -62,7 +62,8 @@ def flow(paths: list[list[str]], columns: list[str]) -> list[str]:
         if len(seen) >= len(paths) / 4 and (not columns or s in columns)
     ]
     order = {s: i for i, s in enumerate(columns)}
-    return sorted(used, key=lambda s: (sum(positions[s]) / len(positions[s]), order.get(s, 0)))
+    ordered = sorted(used, key=lambda s: (sum(positions[s]) / len(positions[s]), order.get(s, 0)))
+    return ordered or columns  # aucun parcours commun : les colonnes du board, sans rien cacher
 
 
 def missing(jira: JiraConfig, environments: list[str]) -> list[str]:
@@ -282,19 +283,27 @@ def foreign_links(tickets: Iterable[tuple[str, Iterable[str]]]) -> list[str]:
 
 
 def rank_boards(
-    boards: list[Board], counts: dict[str, tuple[int, int]], size: int
+    boards: list[Board], counts: dict[str, tuple[int, int]]
 ) -> tuple[list[Board], bool]:
-    """Boards qui portent au moins un des `size` tickets cherchés, celui qui leur ressemble le
-    plus en tête ; `counts` = {board: (tickets cherchés qu'il porte, tickets en tout)}. La
-    ressemblance (Jaccard) préfère un board précis à un board géant qui porte tout. Et si le
-    premier s'impose : seul, ou strictement plus ressemblant que le suivant."""
+    """Boards qui portent au moins un des tickets cherchés et qu'aucun autre ne bat sur les
+    deux tableaux : plus de ces tickets ET moins de tickets en tout. `counts` = {board:
+    (tickets cherchés qu'il porte, tickets en tout)}. Un board géant porte beaucoup de mes
+    tickets sans être le mien, un tout petit n'en porte qu'un : sans critère qui tranche on ne
+    devine pas. Reste en tête le plus chargé de mes tickets. Sûr = un seul survivant."""
 
-    def similarity(board: Board) -> float:
-        held, total = counts.get(board.id, (0, 0))
-        return held / max(total + size - held, 1)
+    def beaten(board: Board) -> bool:
+        held, total = counts[board.id]
+        return any(
+            other_held >= held
+            and other_total <= total
+            and (other_held, other_total) != (held, total)
+            for other in boards
+            if other.id != board.id and other.id in counts
+            for other_held, other_total in [counts[other.id]]
+        )
 
+    holding = [b for b in boards if counts.get(b.id, (0, 0))[0]]
     ranked = sorted(
-        (b for b in boards if counts.get(b.id, (0, 0))[0]), key=similarity, reverse=True
+        (b for b in holding if not beaten(b)), key=lambda b: (-counts[b.id][0], counts[b.id][1])
     )
-    sure = len(ranked) == 1 or (len(ranked) > 1 and similarity(ranked[0]) > similarity(ranked[1]))
-    return ranked, sure
+    return ranked, len(ranked) == 1

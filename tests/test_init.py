@@ -556,3 +556,10 @@ def test_why_gitlab_refused_is_shown():
     hosts = iter([RefusingHost(), FakeHost(events=EVENTS)])
     wizard.run_init(prompter, lambda c, t: tracker(), lambda c, t: next(hosts), lambda: [])
     assert any("404" in m for m in prompter.messages if m.startswith("ERREUR"))
+
+
+def test_summary_says_how_many_finished_tickets_of_each_board_have_gitlab_activity():
+    prompter, _ = init(["https://jira.acme.fr", "pat", "gl", None])
+    summary = next(m for m in prompter.messages if "Board de l'équipe" in m)
+    assert "activité GitLab : 1/1 tickets terminés" in summary
+    assert summary.count("activité GitLab") == 2  # l'équipe et les mises en prod
