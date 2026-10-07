@@ -650,3 +650,37 @@ def test_a_broken_cache_file_is_ignored(tmp_path):
     path = tmp_path / "e.json"
     path.write_text("{pas du json")
     assert EventCache(path).get("x") is None
+
+
+def _timeout():
+    return FakeResponse({"error": "Request timed out"}, status=408)
+
+
+def test_gitlab_timeout_is_retried_after_a_pause():
+    answers = [_timeout(), FakeResponse([mr_json(7, "PROJ-1 x", "feat/PROJ-1")])]
+    sleeps = []
+    client = GitLabClient(
+        "https://gl", FakeSession({"/merge_requests": lambda _: answers.pop(0)}), sleeps.append
+    )
+    assert [mr.iid for mr in client.find_merge_requests("PROJ-1")] == [7]
+    assert sleeps == [1]
+
+
+def test_search_over_all_states_falls_back_to_one_search_per_state():
+    def respond(kwargs):
+        state = kwargs["params"]["state"]
+        if state == "all":
+            return _timeout()
+        mr = mr_json(7, "PROJ-1 x", "feat/PROJ-1", state=state)
+        return FakeResponse([mr] if state == "merged" else [])
+
+    session = FakeSession({"/merge_requests": respond})
+    client = GitLabClient("https://gl", session, lambda _: None)
+    assert [mr.iid for mr in client.find_merge_requests("PROJ-1", include_merged=True)] == [7]
+
+
+def test_other_gitlab_errors_are_not_retried():
+    session = FakeSession({"/merge_requests": FakeResponse({}, status=401)})
+    with pytest.raises(ApiError):
+        GitLabClient("https://gl", session, lambda _: None).find_merge_requests("PROJ-1")
+    assert len(session.calls) == 1
