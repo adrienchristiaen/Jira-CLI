@@ -89,3 +89,30 @@ def test_detail_shows_the_column_intent_and_the_component_without_mr():
     text = _detail(view, []).plain
     assert "Développer" in text
     assert "team/app · feat/PROJ-1" in text and "pas encore de MR" in text
+
+
+def test_several_merge_requests_are_counted_and_listed_with_their_confirmation():
+    import dataclasses
+
+    from fakes import MR
+
+    from jira_cli.dashboard import _detail, _merge_cell
+    from jira_cli.lineage import Linked
+    from jira_cli.overview import TicketView
+    from jira_cli.stages import Stage
+
+    kube = dataclasses.replace(MR, project_path="team/kube", iid=9)
+    view = TicketView(
+        Issue("MEP-1", "Mise en prod", "A installer"),
+        Stage("en preprod", None),
+        mr=MR,
+        merge_status="merged",
+        mrs=(
+            Linked(MR, "US-1", frozenset({"jira", "gitlab"})),
+            Linked(kube, "MEP-1", frozenset({"jira"})),
+        ),
+    )
+    assert "+1" in _merge_cell(view).plain
+    text = _detail(view, []).plain
+    assert "team/app!7" in text and "team/kube!9" in text
+    assert "confirmée" in text and "à vérifier (Jira seul)" in text

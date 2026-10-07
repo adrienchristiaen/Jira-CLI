@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from . import discovery
+from . import discovery, lineage
 from .actions import Context
 from .models import CodeEvent, Stay
 
@@ -25,6 +25,9 @@ def run(key: str, ctx: Context, prompter) -> None:
     if not own:  # un ticket MEP n'a pas de code : ce sont ses tickets liés qui en ont
         for linked in history.links:
             prompter.info(f"  {linked} (lié) : {len(found[linked])} événements")
+    prompter.info("MR du ticket (GitLab recoupé avec le panneau Développement de Jira) :")
+    for linked in lineage.of(key, history.links, ctx.tracker, ctx.host):
+        prompter.info(f"  {lineage.describe(linked)}")
     events = own or sorted((e for k in history.links for e in found[k]), key=lambda e: e.at)
     intents = dict(enumerate(discovery.stay_intents(history, events)))
     prompter.info("Passages :")

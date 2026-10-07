@@ -684,3 +684,18 @@ def test_other_gitlab_errors_are_not_retried():
     with pytest.raises(ApiError):
         GitLabClient("https://gl", session, lambda _: None).find_merge_requests("PROJ-1")
     assert len(session.calls) == 1
+
+
+def test_merge_request_is_read_from_a_jira_development_panel_link():
+    mr = {**mr_json(9, "Kube", "deploy/x", state="merged"), "references": {"full": "team/kube!9"}}
+    session = FakeSession({"/projects/team%2Fkube/merge_requests/9": FakeResponse(mr)})
+    client = GitLabClient("https://gl", session)
+    found = client.merge_request_at("https://gl/team/kube/-/merge_requests/9")
+    assert (found.project_path, found.iid, found.state) == ("team/kube", 9, "merged")
+
+
+def test_a_link_that_is_not_a_merge_request_of_this_gitlab_is_ignored():
+    client = GitLabClient("https://gl", FakeSession({}))
+    assert client.merge_request_at("https://github.com/acme/app/pull/3") is None
+    assert client.merge_request_at("https://other/team/app/-/merge_requests/1") is None
+    assert client.merge_request_at("https://gl/team/app/-/commit/abc") is None

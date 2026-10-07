@@ -31,6 +31,7 @@ class FakeTracker:
     linked_by_board: dict[str, list[Issue]] = field(default_factory=dict)  # sinon `linked` partout
     project_boards: dict[str, list[Board]] = field(default_factory=dict)  # sinon all_boards
     links: list[str] = field(default_factory=list)  # liens web / panneau Développement
+    links_by_key: dict[str, list[str]] = field(default_factory=dict)  # sinon `links` partout
     # Vie des tickets terminés, par board : History, ou juste la liste des colonnes traversées.
     histories: dict[str, list] = field(default_factory=dict)
     history_boards: list[str] = field(default_factory=list)
@@ -97,7 +98,7 @@ class FakeTracker:
         ]
 
     def dev_links(self, key: str) -> list[str]:
-        return self.links
+        return self.links_by_key.get(key, self.links) if self.links_by_key else self.links
 
     def statuses(self, board: str = "") -> list[str]:
         if board in self.board_statuses:
@@ -108,6 +109,7 @@ class FakeTracker:
 @dataclass
 class FakeHost:
     mrs: list[MergeRequest] = field(default_factory=lambda: [MR])
+    mrs_by_url: dict[str, MergeRequest] = field(default_factory=dict)  # MR lues par leur lien
     mrs_by_key: dict[str, list[MergeRequest]] | None = None  # si donné : MR citant chaque clé
     files: dict[str, str] = field(default_factory=dict)
     paths: list[str] = field(default_factory=list)
@@ -135,6 +137,9 @@ class FakeHost:
     def find_merge_requests(self, ticket_key: str, include_merged: bool = False):
         mrs = self.mrs if self.mrs_by_key is None else self.mrs_by_key.get(ticket_key, [])
         return [mr for mr in mrs if include_merged or mr.state == "opened"]
+
+    def merge_request_at(self, url: str) -> MergeRequest | None:
+        return self.mrs_by_url.get(url)
 
     def merge_status(self, mr: MergeRequest) -> str:
         return self.mergeable
